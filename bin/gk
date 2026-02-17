@@ -447,7 +447,7 @@ cmd_init() {
     2)
       cat > "$config_path" <<EOF
 # git-kiss config
-# Docs: https://github.com/marcjeffrey/git-kiss
+# Docs: https://github.com/mjeffrey18/git-kiss
 
 MAIN_BRANCH=main
 DEVELOP_BRANCH=
@@ -461,7 +461,7 @@ EOF
     *)
       cat > "$config_path" <<EOF
 # git-kiss config
-# Docs: https://github.com/marcjeffrey/git-kiss
+# Docs: https://github.com/mjeffrey18/git-kiss
 
 MAIN_BRANCH=main
 DEVELOP_BRANCH=develop

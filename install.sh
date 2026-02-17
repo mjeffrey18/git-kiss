@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO="marcjeffrey/git-kiss"
+REPO="mjeffrey18/git-kiss"
 INSTALL_DIR="/usr/local/bin"
 
 RED='\033[0;31m'
