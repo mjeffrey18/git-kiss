@@ -111,6 +111,9 @@ cmd_nf() {
     die "Usage: gk nf <feature-name>"
   fi
 
+  # Replace spaces with hyphens and lowercase
+  name="$(echo "$name" | tr '[:upper:]' '[:lower:]' | tr ' ' '-')"
+
   local base
   base="$(base_branch)"
 
@@ -130,6 +133,11 @@ cmd_nf() {
 }
 
 cmd_ff() {
+  local force=false
+  if [[ "${1:-}" == "--force" ]]; then
+    force=true
+  fi
+
   require_clean_tree
   require_feature_branch
 
@@ -154,9 +162,29 @@ cmd_ff() {
   git branch -d "$branch"
 
   success "Feature $branch merged into $base."
-  echo ""
-  info "Push your changes:"
-  echo "  git push"
+
+  if [[ "$base" == "$MAIN_BRANCH" ]]; then
+    if [[ "$force" == true ]]; then
+      info "Pushing to origin/$base..."
+      git push origin "$base"
+      success "Pushed to origin/$base."
+    else
+      echo ""
+      read -r -p "Push to origin/$base? [y/N] " answer
+      if [[ "$answer" == [yY] ]]; then
+        git push origin "$base"
+        success "Pushed to origin/$base."
+      else
+        echo ""
+        info "Push your changes:"
+        echo "  git push"
+      fi
+    fi
+  else
+    echo ""
+    info "Push your changes:"
+    echo "  git push"
+  fi
 }
 
 cmd_pf() {
@@ -189,10 +217,20 @@ cmd_pr() {
 }
 
 cmd_dp() {
+  local force=false
+  if [[ "${1:-}" == "--force" ]]; then
+    force=true
+  fi
+
   require_branch_config "DEVELOP_BRANCH" "DEVELOP_BRANCH"
 
+  local current
+  current="$(current_branch)"
+  if [[ "$current" != "$DEVELOP_BRANCH" ]]; then
+    die "You must be on $DEVELOP_BRANCH to deploy to production. Current branch: $current"
+  fi
+
   info "Pulling latest $DEVELOP_BRANCH..."
-  git checkout "$DEVELOP_BRANCH"
   git pull origin "$DEVELOP_BRANCH" --rebase
 
   info "Pulling latest $MAIN_BRANCH..."
@@ -223,18 +261,51 @@ cmd_dp() {
     git tag -a "$tag" -m "release $tag"
 
     success "Production deploy prepared. Tag $tag created."
-    echo ""
-    info "Push with tags:"
-    echo "  git push --follow-tags"
+
+    if [[ "$force" == true ]]; then
+      info "Pushing to origin/$MAIN_BRANCH with tags..."
+      git push --follow-tags origin "$MAIN_BRANCH"
+      success "Here we go again, shipping to production. Hold onto your hats."
+    else
+      echo ""
+      read -r -p "Push to origin/$MAIN_BRANCH with tags? [y/N] " answer
+      if [[ "$answer" == [yY] ]]; then
+        git push --follow-tags origin "$MAIN_BRANCH"
+        success "Here we go again, shipping to production. Hold onto your hats."
+      else
+        echo ""
+        info "Push with tags:"
+        echo "  git push --follow-tags"
+      fi
+    fi
   else
     success "Production deploy prepared."
-    echo ""
-    info "Push your changes:"
-    echo "  git push"
+
+    if [[ "$force" == true ]]; then
+      info "Pushing to origin/$MAIN_BRANCH..."
+      git push origin "$MAIN_BRANCH"
+      success "Here we go again, shipping to production. Hold onto your hats."
+    else
+      echo ""
+      read -r -p "Push to origin/$MAIN_BRANCH? [y/N] " answer
+      if [[ "$answer" == [yY] ]]; then
+        git push origin "$MAIN_BRANCH"
+        success "Here we go again, shipping to production. Hold onto your hats."
+      else
+        echo ""
+        info "Push your changes:"
+        echo "  git push"
+      fi
+    fi
   fi
 }
 
 cmd_ds() {
+  local force=false
+  if [[ "${1:-}" == "--force" ]]; then
+    force=true
+  fi
+
   require_branch_config "STAGING_BRANCH" "STAGING_BRANCH"
   require_feature_branch
   require_clean_tree
@@ -255,9 +326,23 @@ cmd_ds() {
   git rebase "$branch"
 
   success "Staging prepared with changes from $branch."
-  echo ""
-  info "Force push staging:"
-  echo "  git push --force"
+
+  if [[ "$force" == true ]]; then
+    info "Force pushing to origin/$STAGING_BRANCH..."
+    git push --force origin "$STAGING_BRANCH"
+    success "Shipping to staging! Let's hope we don't take down the DB this time..."
+  else
+    echo ""
+    read -r -p "Force push to origin/$STAGING_BRANCH? [y/N] " answer
+    if [[ "$answer" == [yY] ]]; then
+      git push --force origin "$STAGING_BRANCH"
+      success "Shipping to staging! Let's hope we don't take down the DB this time..."
+    else
+      echo ""
+      info "Force push staging:"
+      echo "  git push --force"
+    fi
+  fi
 }
 
 cmd_fs() {
@@ -404,14 +489,17 @@ ${BOLD}USAGE${NC}
 
 ${BOLD}COMMANDS${NC}
   nf <name>    New feature branch
-  ff           Finish current feature (merge into base branch)
+  ff           Finish current feature (merge into base branch, prompt to push)
+  ff!          Finish current feature (merge and push)
   sf           Squash feature commits (rebase + squash, with prompt)
   sf!          Squash feature commits (no prompt)
   pf           Publish feature branch to remote
   pr <title>   Create a pull request (requires gh CLI)
   rf           Rebase feature branch against base branch
-  ds           Deploy to staging
-  dp           Deploy to production (tag release)
+  ds           Deploy to staging (prompt to force push)
+  ds!          Deploy to staging (force push automatically)
+  dp           Deploy to production (tag release, prompt to push)
+  dp!          Deploy to production (tag release and push)
   init         Initialize .gitkiss config in current repo
 
 ${BOLD}CONFIG${NC}
@@ -439,12 +527,15 @@ main() {
   case "$cmd" in
     nf)       cmd_nf "$@" ;;
     ff)       cmd_ff "$@" ;;
+    'ff!')    cmd_ff --force "$@" ;;
     sf)       cmd_fs "$@" ;;
     'sf!')    cmd_fs --force "$@" ;;
     pf)       cmd_pf "$@" ;;
     pr)       cmd_pr "$@" ;;
     dp)       cmd_dp "$@" ;;
+    'dp!')    cmd_dp --force "$@" ;;
     ds)       cmd_ds "$@" ;;
+    'ds!')    cmd_ds --force "$@" ;;
     rf)       cmd_rf "$@" ;;
     init)     cmd_init "$@" ;;
     help|--help|-h)    cmd_help ;;
