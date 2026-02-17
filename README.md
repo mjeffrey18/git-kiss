@@ -9,14 +9,14 @@ Keep It Simple, Stupid — a dead-simple CLI wrapper for git and github cli (opt
 **Homebrew:**
 
 ```bash
-brew tap marcjeffrey/git-kiss
+brew tap mjeffrey18/git-kiss
 brew install git-kiss
 ```
 
 **curl:**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/marcjeffrey/git-kiss/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/mjeffrey18/git-kiss/main/install.sh | bash
 ```
 
 ## Quick Start

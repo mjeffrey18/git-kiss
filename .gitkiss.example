@@ -1,5 +1,5 @@
 # git-kiss config
-# Docs: https://github.com/marcjeffrey/git-kiss
+# Docs: https://github.com/mjeffrey18/git-kiss
 #
 # Copy this file to .gitkiss in your repo root, or ~/.git-kiss for global defaults.
 # Repo config (.gitkiss) overrides global config (~/.git-kiss).
