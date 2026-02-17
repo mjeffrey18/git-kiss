@@ -111,6 +111,9 @@ cmd_nf() {
     die "Usage: gk nf <feature-name>"
   fi
 
+  # Replace spaces with hyphens and lowercase
+  name="$(echo "$name" | tr '[:upper:]' '[:lower:]' | tr ' ' '-')"
+
   local base
   base="$(base_branch)"
 
@@ -130,6 +133,11 @@ cmd_nf() {
 }
 
 cmd_ff() {
+  local force=false
+  if [[ "${1:-}" == "--force" ]]; then
+    force=true
+  fi
+
   require_clean_tree
   require_feature_branch
 
@@ -154,9 +162,29 @@ cmd_ff() {
   git branch -d "$branch"
 
   success "Feature $branch merged into $base."
-  echo ""
-  info "Push your changes:"
-  echo "  git push"
+
+  if [[ "$base" == "$MAIN_BRANCH" ]]; then
+    if [[ "$force" == true ]]; then
+      info "Pushing to origin/$base..."
+      git push origin "$base"
+      success "Pushed to origin/$base."
+    else
+      echo ""
+      read -r -p "Push to origin/$base? [y/N] " answer
+      if [[ "$answer" == [yY] ]]; then
+        git push origin "$base"
+        success "Pushed to origin/$base."
+      else
+        echo ""
+        info "Push your changes:"
+        echo "  git push"
+      fi
+    fi
+  else
+    echo ""
+    info "Push your changes:"
+    echo "  git push"
+  fi
 }
 
 cmd_pf() {
@@ -404,7 +432,8 @@ ${BOLD}USAGE${NC}
 
 ${BOLD}COMMANDS${NC}
   nf <name>    New feature branch
-  ff           Finish current feature (merge into base branch)
+  ff           Finish current feature (merge into base branch, prompt to push)
+  ff!          Finish current feature (merge and push)
   sf           Squash feature commits (rebase + squash, with prompt)
   sf!          Squash feature commits (no prompt)
   pf           Publish feature branch to remote
@@ -439,6 +468,7 @@ main() {
   case "$cmd" in
     nf)       cmd_nf "$@" ;;
     ff)       cmd_ff "$@" ;;
+    'ff!')    cmd_ff --force "$@" ;;
     sf)       cmd_fs "$@" ;;
     'sf!')    cmd_fs --force "$@" ;;
     pf)       cmd_pf "$@" ;;

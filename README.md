@@ -37,7 +37,7 @@ gk ff                # finish feature (merge into base branch)
 | Command           | Description                                                             |
 | ----------------- | ----------------------------------------------------------------------- |
 | `gk nf "<name>"`  | **New feature** — create a feature branch from the base branch          |
-| `gk ff`           | **Finish feature** — merge feature into base branch (merge commit)      |
+| `gk ff` / `ff!`   | **Finish feature** — merge feature into base branch (merge commit)      |
 | `gk sf` / `sf!`   | **Squash feature** — rebase onto base and squash all commits into one   |
 | `gk pf`           | **Publish feature** — push feature branch to remote                     |
 | `gk pr "<title>"` | **Pull request** — create a PR via `gh` CLI (supports extra `gh` flags) |
