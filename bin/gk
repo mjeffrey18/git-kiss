@@ -150,41 +150,51 @@ cmd_ff() {
   git checkout "$base"
   git pull origin "$base" --rebase
 
-  info "Rebasing $branch onto $base..."
   git checkout "$branch"
-  git rebase "$base"
+
+  local behind
+  behind="$(git rev-list --count HEAD.."$base")"
+  if [[ "$behind" -gt 0 ]]; then
+    die "Feature branch is $behind commit(s) behind $base. Run 'gk rf' to rebase first."
+  fi
 
   info "Merging $branch into $base..."
   git checkout "$base"
   git merge "$branch" --no-ff -m "Merge branch '$branch' into $base"
 
-  info "Deleting feature branch $branch..."
-  git branch -d "$branch"
-
   success "Feature $branch merged into $base."
 
-  if [[ "$base" == "$MAIN_BRANCH" ]]; then
-    if [[ "$force" == true ]]; then
-      info "Pushing to origin/$base..."
-      git push origin "$base"
-      success "Pushed to origin/$base."
-    else
-      echo ""
-      read -r -p "Push to origin/$base? [y/N] " answer
-      if [[ "$answer" == [yY] ]]; then
-        git push origin "$base"
-        success "Pushed to origin/$base."
-      else
-        echo ""
-        info "Push your changes:"
-        echo "  git push"
-      fi
-    fi
+  if [[ "$force" == true ]]; then
+    info "Pushing to origin/$base..."
+    git push origin "$base"
+    success "Pushed to origin/$base."
+
+    info "Deleting feature branch $branch..."
+    git branch -d "$branch"
+    git push origin --delete "$branch" 2>/dev/null || true
+
+    success "Branch $branch deleted."
   else
     echo ""
     info "Push your changes:"
     echo "  git push"
   fi
+}
+
+cmd_cm() {
+  local message="${1:-}"
+  if [[ -z "$message" ]]; then
+    die "Usage: gk cm <message>"
+  fi
+
+  if [[ -z "$(git status --porcelain)" ]]; then
+    die "Nothing to commit. Working tree is clean."
+  fi
+
+  git add -A
+  git commit -m "$message"
+
+  success "Committed: $message"
 }
 
 cmd_pf() {
@@ -358,14 +368,6 @@ cmd_fs() {
   branch="$(current_branch)"
   base="$(base_branch)"
 
-  info "Pulling latest $base..."
-  git checkout "$base"
-  git pull origin "$base" --rebase
-
-  info "Rebasing $branch onto $base..."
-  git checkout "$branch"
-  git rebase "$base"
-
   merge_base="$(git merge-base "$base" HEAD)"
   commit_count="$(git rev-list --count "$merge_base..HEAD")"
 
@@ -378,7 +380,7 @@ cmd_fs() {
     echo ""
     info "Squashing $commit_count commits on $branch:"
     echo ""
-    git log --oneline "$merge_base..HEAD"
+    git --no-pager log --oneline "$merge_base..HEAD"
     echo ""
     read -r -p "Proceed? [y/N] " answer
     if [[ "$answer" != [yY] ]]; then
@@ -493,6 +495,7 @@ ${BOLD}COMMANDS${NC}
   ff!          Finish current feature (merge and push)
   sf           Squash feature commits (rebase + squash, with prompt)
   sf!          Squash feature commits (no prompt)
+  cm <msg>     Add all changes and commit with message
   pf           Publish feature branch to remote
   pr <title>   Create a pull request (requires gh CLI)
   rf           Rebase feature branch against base branch
@@ -530,6 +533,7 @@ main() {
     'ff!')    cmd_ff --force "$@" ;;
     sf)       cmd_fs "$@" ;;
     'sf!')    cmd_fs --force "$@" ;;
+    cm)       cmd_cm "$@" ;;
     pf)       cmd_pf "$@" ;;
     pr)       cmd_pr "$@" ;;
     dp)       cmd_dp "$@" ;;
