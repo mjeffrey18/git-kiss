@@ -1,0 +1,27 @@
+# git-kiss config
+# Docs: https://github.com/marcjeffrey/git-kiss
+#
+# Copy this file to .gitkiss in your repo root, or ~/.git-kiss for global defaults.
+# Repo config (.gitkiss) overrides global config (~/.git-kiss).
+#
+# Run `gk init` to generate this interactively.
+
+# ─── Full flow ───────────────────────────────────────────────────────────────
+# Branches: main → develop → feature/* with staging and release tags
+#
+# MAIN_BRANCH=main
+# DEVELOP_BRANCH=develop
+# STAGING_BRANCH=staging
+# FEATURE_PREFIX=feature/
+# USE_TAGS=true
+# INITIALS=mj
+
+# ─── Simple flow ─────────────────────────────────────────────────────────────
+# Branches: main → feature/* (no develop, no staging, no tags)
+#
+# MAIN_BRANCH=main
+# DEVELOP_BRANCH=
+# STAGING_BRANCH=
+# FEATURE_PREFIX=feature/
+# USE_TAGS=false
+# INITIALS=mj

@@ -1,0 +1,461 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+VERSION="0.1.0"
+
+# ─── Defaults ────────────────────────────────────────────────────────────────
+
+DEFAULT_MAIN_BRANCH="main"
+DEFAULT_DEVELOP_BRANCH="develop"
+DEFAULT_STAGING_BRANCH="staging"
+DEFAULT_FEATURE_PREFIX="feature/"
+DEFAULT_USE_TAGS="true"
+DEFAULT_INITIALS=""
+
+# ─── Config Loading ──────────────────────────────────────────────────────────
+
+MAIN_BRANCH="$DEFAULT_MAIN_BRANCH"
+DEVELOP_BRANCH="$DEFAULT_DEVELOP_BRANCH"
+STAGING_BRANCH="$DEFAULT_STAGING_BRANCH"
+FEATURE_PREFIX="$DEFAULT_FEATURE_PREFIX"
+USE_TAGS="$DEFAULT_USE_TAGS"
+INITIALS="$DEFAULT_INITIALS"
+
+load_config() {
+  local global_config="$HOME/.git-kiss"
+  local repo_root
+  repo_root="$(git rev-parse --show-toplevel 2>/dev/null || echo "")"
+  local repo_config="${repo_root:+$repo_root/.gitkiss}"
+
+  # Source global config first, then repo config to override
+  if [[ -f "$global_config" ]]; then
+    # shellcheck source=/dev/null
+    source "$global_config"
+  fi
+  if [[ -n "$repo_config" && -f "$repo_config" ]]; then
+    # shellcheck source=/dev/null
+    source "$repo_config"
+  fi
+}
+
+# ─── Helpers ─────────────────────────────────────────────────────────────────
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+BLUE='\033[0;34m'
+BOLD='\033[1m'
+NC='\033[0m' # No Color
+
+info()    { echo -e "${BLUE}→${NC} $*"; }
+success() { echo -e "${GREEN}✓${NC} $*"; }
+warn()    { echo -e "${YELLOW}!${NC} $*"; }
+error()   { echo -e "${RED}✗${NC} $*" >&2; }
+die()     { error "$@"; exit 1; }
+
+current_branch() {
+  git branch --show-current
+}
+
+base_branch() {
+  if [[ -n "$DEVELOP_BRANCH" ]]; then
+    echo "$DEVELOP_BRANCH"
+  else
+    echo "$MAIN_BRANCH"
+  fi
+}
+
+require_git_repo() {
+  git rev-parse --git-dir &>/dev/null || die "Not a git repository."
+}
+
+require_clean_tree() {
+  if [[ -n "$(git status --porcelain)" ]]; then
+    die "Working tree is dirty. Please commit or stash your changes first."
+  fi
+}
+
+require_feature_branch() {
+  local branch
+  branch="$(current_branch)"
+  if [[ "$branch" != "${FEATURE_PREFIX}"* ]]; then
+    die "Not on a feature branch. Current branch: $branch (expected prefix: ${FEATURE_PREFIX})"
+  fi
+}
+
+require_branch_config() {
+  local var_name="$1"
+  local label="$2"
+  if [[ -z "${!var_name}" ]]; then
+    die "$label is not configured. This command requires the $label to be set in your .gitkiss config."
+  fi
+}
+
+require_command() {
+  local cmd="$1"
+  local install_hint="${2:-}"
+  if ! command -v "$cmd" &>/dev/null; then
+    if [[ -n "$install_hint" ]]; then
+      die "'$cmd' is not installed. $install_hint"
+    else
+      die "'$cmd' is not installed."
+    fi
+  fi
+}
+
+# ─── Commands ────────────────────────────────────────────────────────────────
+
+cmd_nf() {
+  local name="${1:-}"
+  if [[ -z "$name" ]]; then
+    die "Usage: gk nf <feature-name>"
+  fi
+
+  local base
+  base="$(base_branch)"
+
+  info "Checking out $base and pulling latest..."
+  git checkout "$base"
+  git pull origin "$base" --rebase
+
+  if [[ -n "$INITIALS" ]]; then
+    name="${INITIALS}-${name}"
+  fi
+
+  local branch_name="${FEATURE_PREFIX}${name}"
+  info "Creating branch $branch_name..."
+  git checkout -b "$branch_name"
+
+  success "Feature branch $branch_name created from $base."
+}
+
+cmd_ff() {
+  require_clean_tree
+  require_feature_branch
+
+  local branch
+  branch="$(current_branch)"
+  local base
+  base="$(base_branch)"
+
+  info "Pulling latest $base..."
+  git checkout "$base"
+  git pull origin "$base" --rebase
+
+  info "Rebasing $branch onto $base..."
+  git checkout "$branch"
+  git rebase "$base"
+
+  info "Merging $branch into $base..."
+  git checkout "$base"
+  git merge "$branch" --no-ff -m "Merge branch '$branch' into $base"
+
+  info "Deleting feature branch $branch..."
+  git branch -d "$branch"
+
+  success "Feature $branch merged into $base."
+  echo ""
+  info "Push your changes:"
+  echo "  git push"
+}
+
+cmd_pf() {
+  require_feature_branch
+
+  local branch
+  branch="$(current_branch)"
+
+  info "Publishing $branch..."
+  git push --set-upstream origin "$branch"
+
+  success "Branch $branch published to origin."
+}
+
+cmd_pr() {
+  require_command "gh" "Install the GitHub CLI: https://cli.github.com"
+  require_feature_branch
+
+  local title="${1:-}"
+  if [[ -z "$title" ]]; then
+    die "Usage: gk pr <title> [gh flags...]"
+  fi
+  shift
+
+  local base
+  base="$(base_branch)"
+
+  info "Creating pull request targeting $base..."
+  gh pr create --base "$base" --title "$title" --fill "$@"
+}
+
+cmd_dp() {
+  require_branch_config "DEVELOP_BRANCH" "DEVELOP_BRANCH"
+
+  info "Pulling latest $DEVELOP_BRANCH..."
+  git checkout "$DEVELOP_BRANCH"
+  git pull origin "$DEVELOP_BRANCH" --rebase
+
+  info "Pulling latest $MAIN_BRANCH..."
+  git checkout "$MAIN_BRANCH"
+  git pull origin "$MAIN_BRANCH" --rebase
+
+  info "Rebasing $DEVELOP_BRANCH onto $MAIN_BRANCH..."
+  git rebase "$DEVELOP_BRANCH"
+
+  if [[ "$USE_TAGS" == "true" ]]; then
+    local latest_tag current_release next_release tag
+
+    if git describe --tags --match='v*' &>/dev/null; then
+      latest_tag="$(git describe --tags "$(git rev-list --tags='v*' --max-count=1)")"
+      current_release="${latest_tag#v}"
+      # Increment patch version
+      next_release="$(echo "$current_release" | awk -F. '{$NF = $NF + 1;} 1' | sed 's/ /./g')"
+    else
+      latest_tag="(none)"
+      next_release="0.0.1"
+    fi
+
+    tag="v${next_release}"
+
+    info "Previous tag: $latest_tag"
+    info "New tag: $tag"
+
+    git tag -a "$tag" -m "release $tag"
+
+    success "Production deploy prepared. Tag $tag created."
+    echo ""
+    info "Push with tags:"
+    echo "  git push --follow-tags"
+  else
+    success "Production deploy prepared."
+    echo ""
+    info "Push your changes:"
+    echo "  git push"
+  fi
+}
+
+cmd_ds() {
+  require_branch_config "STAGING_BRANCH" "STAGING_BRANCH"
+  require_feature_branch
+  require_clean_tree
+
+  local branch
+  branch="$(current_branch)"
+  local base
+  base="$(base_branch)"
+
+  info "Rebasing $branch against $base..."
+  git rebase "$base"
+
+  info "Pulling latest $STAGING_BRANCH..."
+  git checkout "$STAGING_BRANCH"
+  git pull origin "$STAGING_BRANCH" --rebase
+
+  info "Rebasing $STAGING_BRANCH onto $branch..."
+  git rebase "$branch"
+
+  success "Staging prepared with changes from $branch."
+  echo ""
+  info "Force push staging:"
+  echo "  git push --force"
+}
+
+cmd_fs() {
+  local force=false
+  if [[ "${1:-}" == "--force" ]]; then
+    force=true
+  fi
+
+  require_feature_branch
+  require_clean_tree
+
+  local branch base merge_base commit_count
+  branch="$(current_branch)"
+  base="$(base_branch)"
+
+  info "Pulling latest $base..."
+  git checkout "$base"
+  git pull origin "$base" --rebase
+
+  info "Rebasing $branch onto $base..."
+  git checkout "$branch"
+  git rebase "$base"
+
+  merge_base="$(git merge-base "$base" HEAD)"
+  commit_count="$(git rev-list --count "$merge_base..HEAD")"
+
+  if [[ "$commit_count" -le 1 ]]; then
+    success "Only $commit_count commit(s) on this branch — nothing to squash."
+    return
+  fi
+
+  if [[ "$force" == false ]]; then
+    echo ""
+    info "Squashing $commit_count commits on $branch:"
+    echo ""
+    git log --oneline "$merge_base..HEAD"
+    echo ""
+    read -r -p "Proceed? [y/N] " answer
+    if [[ "$answer" != [yY] ]]; then
+      info "Aborted."
+      return
+    fi
+  fi
+
+  local messages
+  messages="$(git log --reverse --format='- %s' "$merge_base..HEAD")"
+
+  git reset --soft "$merge_base"
+  git commit -m "$(printf '%s\n\n%s' "$branch" "$messages")"
+
+  success "$commit_count commits squashed into one on $branch."
+}
+
+cmd_rf() {
+  require_feature_branch
+  require_clean_tree
+
+  local branch
+  branch="$(current_branch)"
+  local base
+  base="$(base_branch)"
+
+  info "Pulling latest $base..."
+  git checkout "$base"
+  git pull origin "$base" --rebase
+
+  info "Rebasing $branch onto $base..."
+  git checkout "$branch"
+  git rebase "$base"
+
+  success "Branch $branch is up to date with $base."
+}
+
+cmd_init() {
+  local repo_root
+  repo_root="$(git rev-parse --show-toplevel 2>/dev/null || die "Not a git repository.")"
+  local config_path="$repo_root/.gitkiss"
+
+  if [[ -f "$config_path" ]]; then
+    warn "Config file already exists at $config_path"
+    read -r -p "Overwrite? [y/N] " answer
+    if [[ "$answer" != [yY] ]]; then
+      info "Aborted."
+      return
+    fi
+  fi
+
+  echo ""
+  echo -e "${BOLD}Choose your git flow:${NC}"
+  echo ""
+  echo "  1) Full flow  (main → develop → feature/* with staging and release tags)"
+  echo "  2) Simple flow (main → feature/* with no develop branch)"
+  echo ""
+  read -r -p "Select [1/2]: " flow
+
+  echo ""
+  read -r -p "Your initials (leave blank to skip): " initials
+
+  case "$flow" in
+    2)
+      cat > "$config_path" <<EOF
+# git-kiss config
+# Docs: https://github.com/marcjeffrey/git-kiss
+
+MAIN_BRANCH=main
+DEVELOP_BRANCH=
+STAGING_BRANCH=
+FEATURE_PREFIX=feature/
+USE_TAGS=false
+INITIALS=${initials}
+EOF
+      success "Simple flow config written to $config_path"
+      ;;
+    *)
+      cat > "$config_path" <<EOF
+# git-kiss config
+# Docs: https://github.com/marcjeffrey/git-kiss
+
+MAIN_BRANCH=main
+DEVELOP_BRANCH=develop
+STAGING_BRANCH=staging
+FEATURE_PREFIX=feature/
+USE_TAGS=true
+INITIALS=${initials}
+EOF
+      success "Full flow config written to $config_path"
+      ;;
+  esac
+
+  # Add .gitkiss to .gitignore if not already there
+  local gitignore="$repo_root/.gitignore"
+  if [[ ! -f "$gitignore" ]] || ! grep -qx '.gitkiss' "$gitignore"; then
+    echo '.gitkiss' >> "$gitignore"
+    success "Added .gitkiss to .gitignore"
+  fi
+}
+
+cmd_help() {
+  cat <<EOF
+${BOLD}git-kiss${NC} v${VERSION} — Keep It Simple, Stupid git flow
+
+${BOLD}USAGE${NC}
+  gk <command> [args]
+
+${BOLD}COMMANDS${NC}
+  nf <name>    New feature branch
+  ff           Finish current feature (merge into base branch)
+  sf           Squash feature commits (rebase + squash, with prompt)
+  sf!          Squash feature commits (no prompt)
+  pf           Publish feature branch to remote
+  pr <title>   Create a pull request (requires gh CLI)
+  rf           Rebase feature branch against base branch
+  ds           Deploy to staging
+  dp           Deploy to production (tag release)
+  init         Initialize .gitkiss config in current repo
+
+${BOLD}CONFIG${NC}
+  Global:  ~/.git-kiss
+  Repo:    .gitkiss (overrides global)
+
+  Run ${BOLD}gk init${NC} to generate a config file.
+
+EOF
+}
+
+cmd_version() {
+  echo "gk v${VERSION}"
+}
+
+# ─── Dispatcher ──────────────────────────────────────────────────────────────
+
+main() {
+  require_git_repo
+  load_config
+
+  local cmd="${1:-help}"
+  shift || true
+
+  case "$cmd" in
+    nf)       cmd_nf "$@" ;;
+    ff)       cmd_ff "$@" ;;
+    sf)       cmd_fs "$@" ;;
+    'sf!')    cmd_fs --force "$@" ;;
+    pf)       cmd_pf "$@" ;;
+    pr)       cmd_pr "$@" ;;
+    dp)       cmd_dp "$@" ;;
+    ds)       cmd_ds "$@" ;;
+    rf)       cmd_rf "$@" ;;
+    init)     cmd_init "$@" ;;
+    help|--help|-h)    cmd_help ;;
+    version|--version) cmd_version ;;
+    *)
+      error "Unknown command: $cmd"
+      echo ""
+      cmd_help
+      exit 1
+      ;;
+  esac
+}
+
+main "$@"
