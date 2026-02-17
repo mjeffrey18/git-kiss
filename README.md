@@ -42,8 +42,8 @@ gk ff                # finish feature (merge into base branch)
 | `gk pf`           | **Publish feature** — push feature branch to remote                     |
 | `gk pr "<title>"` | **Pull request** — create a PR via `gh` CLI (supports extra `gh` flags) |
 | `gk rf`           | **Rebase feature** — rebase feature against base branch                 |
-| `gk ds`           | **Deploy staging** — rebase feature onto staging branch                 |
-| `gk dp`           | **Deploy production** — rebase develop into main and tag a release      |
+| `gk ds` / `ds!`   | **Deploy staging** — rebase feature onto staging branch                 |
+| `gk dp` / `dp!`   | **Deploy production** — rebase develop into main and tag a release      |
 | `gk init`         | **Init** — generate a `.gitkiss` config file                            |
 | `gk help`         | **Help** — show usage                                                   |
 
