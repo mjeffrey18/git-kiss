@@ -67,21 +67,29 @@ gk pr "Refactor auth" --body "Switched to JWT tokens"
 ~/projects/my-repo--hotfix-db/   ← gk wt nb hotfix-db
 ```
 
-| Command           | Description                                               |
-| ----------------- | --------------------------------------------------------- |
-| `gk wt nf <name>` | New worktree with a feature branch (uses prefix/initials) |
-| `gk wt nb <name>` | New worktree with a plain branch                          |
-| `gk wt ls`        | List all worktrees with status                            |
-| `gk wt rm <id>`   | Remove a worktree by index or branch name                 |
-| `gk wt clean`     | Remove all worktrees with merged branches                 |
+| Command           | Description                                                |
+| ----------------- | ---------------------------------------------------------- |
+| `gk wt nf <name>` | New worktree with a feature branch (uses prefix/initials)  |
+| `gk wt nb <name>` | New worktree with a plain branch                           |
+| `gk wt ls`        | List all worktrees with status                             |
+| `gk wt rm <id>`   | Remove a worktree by index or branch name                  |
+| `gk wt clean`     | Remove all worktrees with merged branches                  |
+| `wtco`            | Checkout a worktree interactively and `cd` into it (alias) |
 
 ```bash
 gk wt nf task1      # create worktree with feature/mj-task1 branch
 gk wt nb hotfix-db  # create worktree with hotfix-db branch
 gk wt ls            # list all worktrees (numbered)
+wtco                # interactively switch to a worktree (see below)
 gk wt rm 2          # remove worktree #2
 gk wt rm task1      # remove worktree matching "task1"
 gk wt clean         # clean up merged worktrees
+```
+
+To enable `wtco`, add this alias to your `~/.bashrc` or `~/.zshrc`:
+
+```bash
+alias wtco='cd $(gk wt co)'
 ```
 
 `gk wt ls` output:

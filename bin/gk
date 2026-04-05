@@ -44,12 +44,12 @@ load_config() {
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
 
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[0;33m'
-BLUE='\033[0;34m'
-BOLD='\033[1m'
-NC='\033[0m' # No Color
+RED=$'\033[0;31m'
+GREEN=$'\033[0;32m'
+YELLOW=$'\033[0;33m'
+BLUE=$'\033[0;34m'
+BOLD=$'\033[1m'
+NC=$'\033[0m' # No Color
 
 info()    { echo -e "${BLUE}→${NC} $*"; }
 success() { echo -e "${GREEN}✓${NC} $*"; }
@@ -162,10 +162,10 @@ check_version() {
     done
 
     if [[ "$is_newer" == true ]]; then
-      echo ""
+      echo "" >&2
       warn "Update available: ${BOLD}v${VERSION}${NC} → ${BOLD}v${remote_version}${NC}"
-      echo -e "   Run: curl -fsSL https://raw.githubusercontent.com/${GITHUB_REPO}/main/install.sh | bash"
-      echo ""
+      echo -e "   Run: curl -fsSL https://raw.githubusercontent.com/${GITHUB_REPO}/main/install.sh | bash" >&2
+      echo "" >&2
     fi
   fi
 }
@@ -615,6 +615,7 @@ cmd_wt() {
     nf)    cmd_wt_nf "$@" ;;
     nb)    cmd_wt_nb "$@" ;;
     ls)    cmd_wt_ls "$@" ;;
+    co)    cmd_wt_co "$@" ;;
     rm)    cmd_wt_rm "$@" ;;
     clean)  cmd_wt_clean "$@" ;;
     clean!) cmd_wt_clean --force "$@" ;;
@@ -733,9 +734,55 @@ cmd_wt_ls() {
       fi
     fi
 
-    printf "${marker}${BOLD}%-4s${NC} %-30s %-40s %b%b\n" "$i" "$wt_branch" "$wt_path" "$ab" "$dirty"
+    printf "${marker}${BOLD}%-4s${NC} %-30s %-40s %s%s\n" "$i" "$wt_branch" "$wt_path" "$ab" "$dirty"
   done
   echo ""
+}
+
+cmd_wt_co() {
+  local current_wt
+  current_wt="$(git rev-parse --show-toplevel)"
+
+  parse_worktrees
+
+  if [[ ${#WT_PATHS[@]} -le 1 ]]; then
+    info "No other worktrees to switch to." >&2
+    return
+  fi
+
+  # Show numbered list (all UI on stderr so stdout stays clean for cd)
+  echo "" >&2
+  for i in "${!WT_PATHS[@]}"; do
+    local wt_path="${WT_PATHS[$i]}"
+    local wt_branch="${WT_BRANCHES[$i]}"
+
+    if [[ "$wt_path" == "$current_wt" ]]; then
+      printf "  ${GREEN}● %-4s${NC} %s\n" "$i" "$wt_branch" >&2
+    else
+      printf "    %-4s %s\n" "$i" "$wt_branch" >&2
+    fi
+  done
+  echo "" >&2
+
+  echo -n "Switch to [#]: " >&2
+  read -r choice </dev/tty
+  if [[ -z "$choice" ]]; then
+    info "Aborted." >&2
+    return
+  fi
+
+  if [[ ! "$choice" =~ ^[0-9]+$ ]] || [[ "$choice" -ge "${#WT_PATHS[@]}" ]]; then
+    die "Invalid selection: $choice"
+  fi
+
+  local target="${WT_PATHS[$choice]}"
+  if [[ "$target" == "$current_wt" ]]; then
+    info "Already in that worktree." >&2
+    return
+  fi
+
+  # Print path to stdout for cd
+  echo "$target"
 }
 
 cmd_wt_rm() {
@@ -877,6 +924,7 @@ ${BOLD}COMMANDS${NC}
   nf <name>          New worktree with feature branch (uses prefix + initials)
   nb <name>          New worktree with plain branch
   ls                 List all worktrees with status
+  co                 Checkout a worktree (interactive selector)
   rm <index|name>    Remove a worktree by index or branch name
   clean              Remove all worktrees with merged branches
 
@@ -884,6 +932,11 @@ ${BOLD}EXAMPLES${NC}
   gk wt nf login          Create worktree with feature/mj-login branch
   gk wt nb hotfix-db       Create worktree with hotfix-db branch
   gk wt ls                 List worktrees (numbered)
+  gk wt co                  Checkout a worktree interactively
+
+${BOLD}TIP${NC}
+  Add this alias to your shell profile to switch worktrees with cd:
+  alias wtco='cd \$(gk wt co)'
   gk wt rm 2               Remove worktree #2
   gk wt rm login           Remove worktree matching "login"
   gk wt clean              Clean up merged worktrees
