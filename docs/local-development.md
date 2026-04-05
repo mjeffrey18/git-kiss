@@ -100,6 +100,27 @@ When adding new tests, keep these in mind:
    }
    ```
 
+## Debugging
+
+Set `GK_DEBUG=1` to enable debug logging. All debug output goes to stderr in dimmed text, so it won't interfere with stdout (e.g. `gk wt co`).
+
+```bash
+GK_DEBUG=1 gk help
+```
+
+This logs:
+
+- Config loading (which files were found/loaded, resolved values)
+- Command dispatch (which command and args are being run)
+- Version check (stamp file state, whether the HTTP call was made or skipped, version comparison result)
+
+You can also combine it with other commands:
+
+```bash
+GK_DEBUG=1 gk nf my-feature
+GK_DEBUG=1 gk wt ls
+```
+
 ## Installing Locally
 
 To install your local version system-wide (overwriting any existing install):

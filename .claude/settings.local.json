@@ -1,10 +1,6 @@
 {
   "permissions": {
     "allow": [
-      "Bash(bash:*)",
-      "Bash(bats --version)",
-      "Bash(brew install:*)",
-      "Bash(git submodule:*)",
       "Bash(bats:*)"
     ]
   }
