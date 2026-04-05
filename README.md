@@ -226,14 +226,15 @@ USE_TAGS=false
 INITIALS=
 ```
 
-| Key              | Default    | Description                                              |
-| ---------------- | ---------- | -------------------------------------------------------- |
-| `MAIN_BRANCH`    | `main`     | Production branch                                        |
-| `DEVELOP_BRANCH` | `develop`  | Integration branch (leave empty for simple flow)         |
-| `STAGING_BRANCH` | `staging`  | Staging branch (leave empty if unused)                   |
-| `FEATURE_PREFIX` | `feature/` | Prefix for feature branches                              |
-| `USE_TAGS`       | `true`     | Auto-increment semver tags on `gk dp`                    |
-| `INITIALS`       |            | Your initials, prepended to feature branches (e.g. `mj`) |
+| Key              | Default    | Description                                                                     |
+| ---------------- | ---------- | ------------------------------------------------------------------------------- |
+| `MAIN_BRANCH`    | `main`     | Production branch                                                               |
+| `DEVELOP_BRANCH` | `develop`  | Integration branch (leave empty for simple flow)                                |
+| `STAGING_BRANCH` | `staging`  | Staging branch (leave empty if unused)                                          |
+| `FEATURE_PREFIX` | `feature/` | Prefix for feature branches                                                     |
+| `USE_TAGS`       | `true`     | Auto-increment semver tags on `gk dp`                                           |
+| `INITIALS`       |            | Your initials, prepended to feature branches (e.g. `mj`)                        |
+| `WORKTREE_COPY`  |            | Space-separated files/folders to copy into new worktrees (e.g. `.gitkiss .env`) |
 
 ## Requirements
 

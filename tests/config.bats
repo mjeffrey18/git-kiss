@@ -45,3 +45,39 @@ EOF
   assert_failure
   assert_output --partial "Not a git repository"
 }
+
+@test "gk in worktree falls back to main repo config" {
+  # Remove .gitkiss from tracking and gitignore it
+  git rm .gitkiss >/dev/null 2>&1
+  echo ".gitkiss" > .gitignore
+  git add .gitignore
+  git commit -m "untrack gitkiss" >/dev/null 2>&1
+  git push origin main >/dev/null 2>&1
+
+  # Write an untracked .gitkiss in the main repo only
+  cat > "$REPO_DIR/.gitkiss" <<EOF
+MAIN_BRANCH=main
+DEVELOP_BRANCH=
+STAGING_BRANCH=
+FEATURE_PREFIX=feat/
+USE_TAGS=false
+INITIALS=zz
+EOF
+
+  # Create a worktree — it won't have .gitkiss since it's untracked
+  bash "$GK" wt nb test-wt >/dev/null 2>&1
+
+  local wt_dir
+  wt_dir="$(dirname "$REPO_DIR")/$(basename "$REPO_DIR")--test-wt"
+  cd "$wt_dir"
+
+  # Worktree should NOT have .gitkiss
+  [ ! -f "$wt_dir/.gitkiss" ]
+
+  # gk should fall back to the main repo's config — use wt nf which doesn't checkout base
+  run bash "$GK" wt nf login
+  assert_success
+
+  run git branch --list "feat/zz-login"
+  assert_output --partial "feat/zz-login"
+}

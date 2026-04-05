@@ -15,6 +15,7 @@ DEFAULT_STAGING_BRANCH="staging"
 DEFAULT_FEATURE_PREFIX="feature/"
 DEFAULT_USE_TAGS="true"
 DEFAULT_INITIALS=""
+DEFAULT_WORKTREE_COPY=""
 
 # ─── Config Loading ──────────────────────────────────────────────────────────
 
@@ -24,6 +25,7 @@ STAGING_BRANCH="$DEFAULT_STAGING_BRANCH"
 FEATURE_PREFIX="$DEFAULT_FEATURE_PREFIX"
 USE_TAGS="$DEFAULT_USE_TAGS"
 INITIALS="$DEFAULT_INITIALS"
+WORKTREE_COPY="$DEFAULT_WORKTREE_COPY"
 
 load_config() {
   local global_config="$HOME/.git-kiss"
@@ -31,15 +33,36 @@ load_config() {
   repo_root="$(git rev-parse --show-toplevel 2>/dev/null || echo "")"
   local repo_config="${repo_root:+$repo_root/.gitkiss}"
 
+  # In a worktree, fall back to the main repo's config
+  if [[ -n "$repo_root" && ! -f "${repo_config:-}" ]]; then
+    local common_dir
+    common_dir="$(git rev-parse --git-common-dir 2>/dev/null || echo "")"
+    if [[ -n "$common_dir" ]]; then
+      local main_root
+      main_root="$(cd "$common_dir" && cd .. && pwd -P)"
+      repo_root="$(cd "$repo_root" && pwd -P)"
+      if [[ "$main_root" != "$repo_root" && -f "$main_root/.gitkiss" ]]; then
+        repo_config="$main_root/.gitkiss"
+      fi
+    fi
+  fi
+
   # Source global config first, then repo config to override
   if [[ -f "$global_config" ]]; then
+    debug "loading global config: $global_config"
     # shellcheck source=/dev/null
     source "$global_config"
+  else
+    debug "no global config found at $global_config"
   fi
   if [[ -n "$repo_config" && -f "$repo_config" ]]; then
+    debug "loading repo config: $repo_config"
     # shellcheck source=/dev/null
     source "$repo_config"
+  else
+    debug "no repo config found"
   fi
+  debug "config: MAIN_BRANCH=$MAIN_BRANCH DEVELOP_BRANCH=${DEVELOP_BRANCH:-} STAGING_BRANCH=${STAGING_BRANCH:-} FEATURE_PREFIX=$FEATURE_PREFIX USE_TAGS=$USE_TAGS INITIALS=${INITIALS:-}"
 }
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -51,11 +74,14 @@ BLUE=$'\033[0;34m'
 BOLD=$'\033[1m'
 NC=$'\033[0m' # No Color
 
+DIM=$'\033[2m'
+
 info()    { echo -e "${BLUE}→${NC} $*"; }
 success() { echo -e "${GREEN}✓${NC} $*"; }
 warn()    { echo -e "${YELLOW}!${NC} $*"; }
 error()   { echo -e "${RED}✗${NC} $*" >&2; }
 die()     { error "$@"; exit 1; }
+debug()   { [[ "${GK_DEBUG:-}" == "1" ]] && echo -e "${DIM}[debug] $*${NC}" >&2 || true; }
 
 current_branch() {
   git branch --show-current
@@ -110,7 +136,8 @@ require_command() {
 # ─── Version Check ──────────────────────────────────────────────────────────
 
 check_version() {
-  local stamp_file="$SCRIPT_DIR/.gk_version_check"
+  local stamp_file="${HOME}/.gk_version_check"
+  debug "version check: local=$VERSION stamp=$stamp_file"
 
   # Only check once per day
   if [[ -f "$stamp_file" ]]; then
@@ -119,29 +146,37 @@ check_version() {
     local now
     now="$(date +%s)"
     local elapsed=$(( now - last_check ))
+    debug "version check: last_check=${last_check} now=${now} elapsed=${elapsed}s (threshold=86400s)"
     if [[ "$elapsed" -lt 86400 ]]; then
+      debug "version check: skipped (checked recently)"
       return
     fi
+  else
+    debug "version check: no stamp file, first run"
   fi
 
-  # Update timestamp (best-effort, skip if not writable)
-  if [[ -w "$SCRIPT_DIR" ]]; then
-    date +%s > "$stamp_file" 2>/dev/null || true
-  fi
+  # Update timestamp
+  date +%s > "$stamp_file" 2>/dev/null || true
+  debug "version check: stamp file updated"
 
   # Fetch latest version from GitHub (timeout 3s, best-effort)
   if ! command -v curl &>/dev/null; then
+    debug "version check: curl not found, skipping"
     return
   fi
 
+  debug "version check: fetching remote version from GitHub..."
   local remote_version
   remote_version="$(curl -fsSL --max-time 3 \
-    "https://raw.githubusercontent.com/${GITHUB_REPO}/main/bin/.git-kiss-version" 2>/dev/null)" || return
+    "https://raw.githubusercontent.com/${GITHUB_REPO}/main/bin/.git-kiss-version" 2>/dev/null)" || { debug "version check: fetch failed"; return; }
   remote_version="$(echo "$remote_version" | tr -d '[:space:]')"
 
   if [[ -z "$remote_version" ]]; then
+    debug "version check: empty remote version"
     return
   fi
+
+  debug "version check: remote=$remote_version local=$VERSION"
 
   # Compare versions (only warn if remote is newer)
   if [[ "$remote_version" != "$VERSION" ]]; then
@@ -162,11 +197,16 @@ check_version() {
     done
 
     if [[ "$is_newer" == true ]]; then
+      debug "version check: update available ($VERSION → $remote_version)"
       echo "" >&2
       warn "Update available: ${BOLD}v${VERSION}${NC} → ${BOLD}v${remote_version}${NC}"
       echo -e "   Run: curl -fsSL https://raw.githubusercontent.com/${GITHUB_REPO}/main/install.sh | bash" >&2
       echo "" >&2
+    else
+      debug "version check: local is up to date (or newer)"
     fi
+  else
+    debug "version check: versions match, up to date"
   fi
 }
 
@@ -522,6 +562,7 @@ STAGING_BRANCH=
 FEATURE_PREFIX=feature/
 USE_TAGS=false
 INITIALS=${initials}
+WORKTREE_COPY=
 EOF
       success "Simple flow config written to $config_path"
       ;;
@@ -536,6 +577,7 @@ STAGING_BRANCH=staging
 FEATURE_PREFIX=feature/
 USE_TAGS=true
 INITIALS=${initials}
+WORKTREE_COPY=
 EOF
       success "Full flow config written to $config_path"
       ;;
@@ -603,6 +645,38 @@ worktree_dir_name() {
   echo "$(dirname "$main_path")/${repo}--${name}"
 }
 
+copy_worktree_files() {
+  local wt_path="$1"
+  local main_path
+  main_path="$(main_worktree_path)"
+
+  if [[ -z "$WORKTREE_COPY" ]]; then
+    return
+  fi
+
+  local copied=0
+  local entry
+  for entry in $WORKTREE_COPY; do
+    local src="$main_path/$entry"
+    local dest="$wt_path/$entry"
+
+    if [[ ! -e "$src" ]]; then
+      debug "worktree copy: skipping $entry (not found in main repo)"
+      continue
+    fi
+
+    # Create parent directory if needed
+    mkdir -p "$(dirname "$dest")"
+    cp -a "$src" "$dest"
+    debug "worktree copy: $entry"
+    copied=$((copied + 1))
+  done
+
+  if [[ "$copied" -gt 0 ]]; then
+    info "Copied $copied item(s) from WORKTREE_COPY config"
+  fi
+}
+
 cmd_wt() {
   local subcmd="${1:-}"
   if [[ -z "$subcmd" ]]; then
@@ -652,6 +726,8 @@ cmd_wt_nf() {
 
   info "Creating worktree at $wt_path..."
   git worktree add "$wt_path" -b "$branch_name" "origin/$base"
+  git -C "$wt_path" branch --unset-upstream 2>/dev/null || true
+  copy_worktree_files "$wt_path"
 
   success "Worktree created at ${BOLD}$wt_path${NC}"
   echo -e "  cd $wt_path"
@@ -675,6 +751,8 @@ cmd_wt_nb() {
 
   info "Creating worktree at $wt_path..."
   git worktree add "$wt_path" -b "$name" "origin/$base"
+  git -C "$wt_path" branch --unset-upstream 2>/dev/null || true
+  copy_worktree_files "$wt_path"
 
   success "Worktree created at ${BOLD}$wt_path${NC}"
   echo -e "  cd $wt_path"
@@ -765,7 +843,7 @@ cmd_wt_co() {
   echo "" >&2
 
   echo -n "Switch to [#]: " >&2
-  read -r choice </dev/tty
+  read -r choice
   if [[ -z "$choice" ]]; then
     info "Aborted." >&2
     return
@@ -932,14 +1010,19 @@ ${BOLD}EXAMPLES${NC}
   gk wt nf login          Create worktree with feature/mj-login branch
   gk wt nb hotfix-db       Create worktree with hotfix-db branch
   gk wt ls                 List worktrees (numbered)
-  gk wt co                  Checkout a worktree interactively
+  gk wt co                 Checkout a worktree interactively
+  gk wt rm 2               Remove worktree #2
+  gk wt rm login           Remove worktree matching "login"
+  gk wt clean              Clean up merged worktrees
+
+${BOLD}CONFIG${NC}
+  WORKTREE_COPY      Space-separated list of files/folders to copy into new worktrees.
+                     Useful for gitignored files like .gitkiss, .env, etc.
+                     Example: WORKTREE_COPY=".gitkiss .env config/local"
 
 ${BOLD}TIP${NC}
   Add this alias to your shell profile to switch worktrees with cd:
   alias wtco='cd \$(gk wt co)'
-  gk wt rm 2               Remove worktree #2
-  gk wt rm login           Remove worktree matching "login"
-  gk wt clean              Clean up merged worktrees
 
 EOF
 }
@@ -984,11 +1067,13 @@ cmd_version() {
 # ─── Dispatcher ──────────────────────────────────────────────────────────────
 
 main() {
+  debug "gk v${VERSION} — $(bash --version | head -1)"
   require_git_repo
   load_config
 
   local cmd="${1:-help}"
   shift || true
+  debug "command: gk $cmd $*"
 
   case "$cmd" in
     nf)       cmd_nf "$@" ;;
