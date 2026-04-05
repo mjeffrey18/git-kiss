@@ -25,15 +25,19 @@ trap 'rm -rf "$TEMP_DIR"' EXIT
 
 curl -fsSL "https://raw.githubusercontent.com/${REPO}/main/bin/gk" -o "$TEMP_DIR/gk" \
   || error "Failed to download gk. Check your network connection."
+curl -fsSL "https://raw.githubusercontent.com/${REPO}/main/bin/.git-kiss-version" -o "$TEMP_DIR/.git-kiss-version" \
+  || error "Failed to download version file. Check your network connection."
 
 chmod +x "$TEMP_DIR/gk"
 
 # Install to /usr/local/bin (may need sudo)
 if [[ -w "$INSTALL_DIR" ]]; then
   mv "$TEMP_DIR/gk" "$INSTALL_DIR/gk"
+  mv "$TEMP_DIR/.git-kiss-version" "$INSTALL_DIR/.git-kiss-version"
 else
   info "Requesting sudo to install to $INSTALL_DIR..."
   sudo mv "$TEMP_DIR/gk" "$INSTALL_DIR/gk"
+  sudo mv "$TEMP_DIR/.git-kiss-version" "$INSTALL_DIR/.git-kiss-version"
 fi
 
 success "git-kiss installed to $INSTALL_DIR/gk"

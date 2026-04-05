@@ -8,10 +8,7 @@ Keep It Simple, Stupid — a dead-simple CLI wrapper for git and github cli (opt
 
 **Homebrew:**
 
-```bash
-brew tap mjeffrey18/git-kiss
-brew install git-kiss
-```
+> Coming soon...
 
 **curl:**
 
@@ -45,6 +42,7 @@ gk ff                # finish feature (merge into base branch)
 | `gk rf`           | **Rebase feature** — rebase feature against base branch                 |
 | `gk ds` / `ds!`   | **Deploy staging** — rebase feature onto staging branch                 |
 | `gk dp` / `dp!`   | **Deploy production** — rebase develop into main and tag a release      |
+| `gk wt <cmd>`     | **Worktree** — manage git worktrees (see below)                         |
 | `gk init`         | **Init** — generate a `.gitkiss` config file                            |
 | `gk help`         | **Help** — show usage                                                   |
 
@@ -58,6 +56,50 @@ gk pr "Fix login bug" --draft
 gk pr "Update API" --reviewer octocat --label enhancement
 gk pr "Refactor auth" --body "Switched to JWT tokens"
 ```
+
+### Worktrees
+
+`gk wt` makes it easy to work on multiple branches simultaneously using [git worktrees](https://git-scm.com/docs/git-worktree). Each worktree gets its own directory as a sibling to your main repo:
+
+```
+~/projects/my-repo/              ← main worktree
+~/projects/my-repo--login/       ← gk wt nf login
+~/projects/my-repo--hotfix-db/   ← gk wt nb hotfix-db
+```
+
+| Command           | Description                                               |
+| ----------------- | --------------------------------------------------------- |
+| `gk wt nf <name>` | New worktree with a feature branch (uses prefix/initials) |
+| `gk wt nb <name>` | New worktree with a plain branch                          |
+| `gk wt ls`        | List all worktrees with status                            |
+| `gk wt rm <id>`   | Remove a worktree by index or branch name                 |
+| `gk wt clean`     | Remove all worktrees with merged branches                 |
+
+```bash
+gk wt nf task1      # create worktree with feature/mj-task1 branch
+gk wt nb hotfix-db  # create worktree with hotfix-db branch
+gk wt ls            # list all worktrees (numbered)
+gk wt rm 2          # remove worktree #2
+gk wt rm task1      # remove worktree matching "task1"
+gk wt clean         # clean up merged worktrees
+```
+
+`gk wt ls` output:
+
+```
+  #    Branch                         Path                                     Status
+  ─────────────────────────────────────────────────────────────────────────────────
+● 0    main                           ~/projects/my-repo
+  1    feature/mj-login               ~/projects/my-repo--mj-login             3↑ 1↓
+  2    feature/mj-signup              ~/projects/my-repo--mj-signup            2↑ *
+  3    hotfix-db                      ~/projects/my-repo--hotfix-db            1↑
+```
+
+- `●` = current worktree
+- `*` = dirty working tree
+- `↑↓` = commits ahead/behind base branch
+
+All other `gk` commands (`cm`, `pf`, `rf`, `pr`, etc.) work inside worktrees — just `cd` into one and use `gk` as normal.
 
 ## How It Works
 
