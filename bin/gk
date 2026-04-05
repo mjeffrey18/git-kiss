@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="0.1.0"
+GITHUB_REPO="mjeffrey18/git-kiss"
+
+# Read version from sibling file (installed or repo)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+VERSION="$(cat "$SCRIPT_DIR/.git-kiss-version" 2>/dev/null || echo "0.0.0")"
 
 # ─── Defaults ────────────────────────────────────────────────────────────────
 
@@ -99,6 +103,69 @@ require_command() {
       die "'$cmd' is not installed. $install_hint"
     else
       die "'$cmd' is not installed."
+    fi
+  fi
+}
+
+# ─── Version Check ──────────────────────────────────────────────────────────
+
+check_version() {
+  local stamp_file="$SCRIPT_DIR/.gk_version_check"
+
+  # Only check once per day
+  if [[ -f "$stamp_file" ]]; then
+    local last_check
+    last_check="$(cat "$stamp_file" 2>/dev/null || echo "0")"
+    local now
+    now="$(date +%s)"
+    local elapsed=$(( now - last_check ))
+    if [[ "$elapsed" -lt 86400 ]]; then
+      return
+    fi
+  fi
+
+  # Update timestamp (best-effort, skip if not writable)
+  if [[ -w "$SCRIPT_DIR" ]]; then
+    date +%s > "$stamp_file" 2>/dev/null || true
+  fi
+
+  # Fetch latest version from GitHub (timeout 3s, best-effort)
+  if ! command -v curl &>/dev/null; then
+    return
+  fi
+
+  local remote_version
+  remote_version="$(curl -fsSL --max-time 3 \
+    "https://raw.githubusercontent.com/${GITHUB_REPO}/main/bin/.git-kiss-version" 2>/dev/null)" || return
+  remote_version="$(echo "$remote_version" | tr -d '[:space:]')"
+
+  if [[ -z "$remote_version" ]]; then
+    return
+  fi
+
+  # Compare versions (only warn if remote is newer)
+  if [[ "$remote_version" != "$VERSION" ]]; then
+    local IFS='.'
+    local -a local_parts=($VERSION)
+    local -a remote_parts=($remote_version)
+    local is_newer=false
+
+    for idx in 0 1 2; do
+      local l="${local_parts[$idx]:-0}"
+      local r="${remote_parts[$idx]:-0}"
+      if [[ "$r" -gt "$l" ]]; then
+        is_newer=true
+        break
+      elif [[ "$r" -lt "$l" ]]; then
+        break
+      fi
+    done
+
+    if [[ "$is_newer" == true ]]; then
+      echo ""
+      warn "Update available: ${BOLD}v${VERSION}${NC} → ${BOLD}v${remote_version}${NC}"
+      echo -e "   Run: curl -fsSL https://raw.githubusercontent.com/${GITHUB_REPO}/main/install.sh | bash"
+      echo ""
     fi
   fi
 }
@@ -482,6 +549,348 @@ EOF
   fi
 }
 
+# ─── Worktree Commands ──────────────────────────────────────────────────────
+
+WT_PATHS=()
+WT_BRANCHES=()
+
+parse_worktrees() {
+  WT_PATHS=()
+  WT_BRANCHES=()
+  local path="" branch=""
+  while IFS= read -r line; do
+    case "$line" in
+      worktree\ *)
+        path="${line#worktree }"
+        branch=""
+        ;;
+      branch\ *)
+        branch="${line#branch refs/heads/}"
+        ;;
+      detached)
+        branch="(detached)"
+        ;;
+      bare)
+        path=""
+        ;;
+      "")
+        if [[ -n "$path" ]]; then
+          WT_PATHS+=("$path")
+          WT_BRANCHES+=("${branch:-???}")
+        fi
+        path=""
+        branch=""
+        ;;
+    esac
+  done < <(git worktree list --porcelain; echo "")
+}
+
+repo_name() {
+  basename "$(git rev-parse --show-toplevel)"
+}
+
+# Return the main worktree path (the original repo root)
+main_worktree_path() {
+  git worktree list --porcelain | head -1 | sed 's/^worktree //'
+}
+
+worktree_dir_name() {
+  local name="$1"
+  local main_path
+  main_path="$(main_worktree_path)"
+  local repo
+  repo="$(basename "$main_path")"
+  echo "$(dirname "$main_path")/${repo}--${name}"
+}
+
+cmd_wt() {
+  local subcmd="${1:-}"
+  if [[ -z "$subcmd" ]]; then
+    cmd_wt_help
+    return
+  fi
+  shift
+
+  case "$subcmd" in
+    nf)    cmd_wt_nf "$@" ;;
+    nb)    cmd_wt_nb "$@" ;;
+    ls)    cmd_wt_ls "$@" ;;
+    rm)    cmd_wt_rm "$@" ;;
+    clean)  cmd_wt_clean "$@" ;;
+    clean!) cmd_wt_clean --force "$@" ;;
+    help|--help|-h) cmd_wt_help ;;
+    *)
+      error "Unknown worktree command: $subcmd"
+      echo ""
+      cmd_wt_help
+      exit 1
+      ;;
+  esac
+}
+
+cmd_wt_nf() {
+  local name="${1:-}"
+  if [[ -z "$name" ]]; then
+    die "Usage: gk wt nf <feature-name>"
+  fi
+
+  name="$(echo "$name" | tr '[:upper:]' '[:lower:]' | tr ' ' '-')"
+
+  if [[ -n "$INITIALS" ]]; then
+    name="${INITIALS}-${name}"
+  fi
+
+  local branch_name="${FEATURE_PREFIX}${name}"
+  local wt_path
+  wt_path="$(worktree_dir_name "$name")"
+  local base
+  base="$(base_branch)"
+
+  info "Fetching latest $base..."
+  git fetch origin "$base"
+
+  info "Creating worktree at $wt_path..."
+  git worktree add "$wt_path" -b "$branch_name" "origin/$base"
+
+  success "Worktree created at ${BOLD}$wt_path${NC}"
+  echo -e "  cd $wt_path"
+}
+
+cmd_wt_nb() {
+  local name="${1:-}"
+  if [[ -z "$name" ]]; then
+    die "Usage: gk wt nb <branch-name>"
+  fi
+
+  name="$(echo "$name" | tr '[:upper:]' '[:lower:]' | tr ' ' '-')"
+
+  local wt_path
+  wt_path="$(worktree_dir_name "$name")"
+  local base
+  base="$(base_branch)"
+
+  info "Fetching latest $base..."
+  git fetch origin "$base"
+
+  info "Creating worktree at $wt_path..."
+  git worktree add "$wt_path" -b "$name" "origin/$base"
+
+  success "Worktree created at ${BOLD}$wt_path${NC}"
+  echo -e "  cd $wt_path"
+}
+
+cmd_wt_ls() {
+  local base
+  base="$(base_branch)"
+  local current_wt
+  current_wt="$(git rev-parse --show-toplevel)"
+
+  parse_worktrees
+
+  if [[ ${#WT_PATHS[@]} -eq 0 ]]; then
+    info "No worktrees found."
+    return
+  fi
+
+  # Header
+  echo ""
+  printf "  ${BOLD}%-4s %-30s %-40s %s${NC}\n" "#" "Branch" "Path" "Status"
+  echo "  ─────────────────────────────────────────────────────────────────────────────────"
+
+  local i
+  for i in "${!WT_PATHS[@]}"; do
+    local wt_path="${WT_PATHS[$i]}"
+    local wt_branch="${WT_BRANCHES[$i]}"
+
+    # Current marker
+    local marker="  "
+    if [[ "$wt_path" == "$current_wt" ]]; then
+      marker="${GREEN}● ${NC}"
+    fi
+
+    # Dirty marker
+    local dirty=""
+    if [[ -d "$wt_path" ]]; then
+      local status_output
+      status_output="$(git -C "$wt_path" status --porcelain 2>/dev/null || echo "")"
+      if [[ -n "$status_output" ]]; then
+        dirty=" ${YELLOW}*${NC}"
+      fi
+    fi
+
+    # Ahead/behind relative to base
+    local ab=""
+    if [[ "$wt_branch" != "(detached)" && "$wt_branch" != "???" ]]; then
+      local ahead=0 behind=0
+      ahead="$(git -C "$wt_path" rev-list --count "origin/$base..HEAD" 2>/dev/null || echo "0")"
+      behind="$(git -C "$wt_path" rev-list --count "HEAD..origin/$base" 2>/dev/null || echo "0")"
+      if [[ "$ahead" -gt 0 && "$behind" -gt 0 ]]; then
+        ab="${GREEN}${ahead}↑${NC} ${RED}${behind}↓${NC}"
+      elif [[ "$ahead" -gt 0 ]]; then
+        ab="${GREEN}${ahead}↑${NC}"
+      elif [[ "$behind" -gt 0 ]]; then
+        ab="${RED}${behind}↓${NC}"
+      fi
+    fi
+
+    printf "${marker}${BOLD}%-4s${NC} %-30s %-40s %b%b\n" "$i" "$wt_branch" "$wt_path" "$ab" "$dirty"
+  done
+  echo ""
+}
+
+cmd_wt_rm() {
+  local target="${1:-}"
+  if [[ -z "$target" ]]; then
+    die "Usage: gk wt rm <index|name>"
+  fi
+
+  parse_worktrees
+
+  local rm_path="" rm_branch=""
+
+  # Check if target is a number (index)
+  if [[ "$target" =~ ^[0-9]+$ ]]; then
+    if [[ "$target" -ge "${#WT_PATHS[@]}" ]]; then
+      die "Index $target is out of range. Run 'gk wt ls' to see available worktrees."
+    fi
+    rm_path="${WT_PATHS[$target]}"
+    rm_branch="${WT_BRANCHES[$target]}"
+  else
+    # Match by branch name (partial match)
+    for i in "${!WT_BRANCHES[@]}"; do
+      if [[ "${WT_BRANCHES[$i]}" == "$target" || "${WT_BRANCHES[$i]}" == *"$target"* ]]; then
+        rm_path="${WT_PATHS[$i]}"
+        rm_branch="${WT_BRANCHES[$i]}"
+        break
+      fi
+    done
+  fi
+
+  if [[ -z "$rm_path" ]]; then
+    die "Worktree not found: $target"
+  fi
+
+  # Don't allow removing the main worktree
+  local main_path
+  main_path="$(main_worktree_path)"
+  if [[ "$rm_path" == "$main_path" ]]; then
+    die "Cannot remove the main worktree."
+  fi
+
+  info "Removing worktree at $rm_path..."
+  git worktree remove "$rm_path" --force
+
+  # Delete branch if it was merged
+  local base
+  base="$(base_branch)"
+  if [[ "$rm_branch" != "(detached)" && "$rm_branch" != "???" ]]; then
+    if git branch --merged "$base" | grep -q "$rm_branch"; then
+      git branch -d "$rm_branch" 2>/dev/null || true
+      success "Worktree removed. Branch $rm_branch deleted (was merged)."
+    else
+      success "Worktree removed. Branch $rm_branch kept (not yet merged)."
+    fi
+  else
+    success "Worktree removed."
+  fi
+}
+
+cmd_wt_clean() {
+  local force=false
+  if [[ "${1:-}" == "--force" ]]; then
+    force=true
+    shift
+  fi
+
+  local base
+  base="$(base_branch)"
+  local main_path
+  main_path="$(main_worktree_path)"
+
+  parse_worktrees
+
+  # Collect merged worktrees
+  local -a clean_paths=()
+  local -a clean_branches=()
+  for i in "${!WT_PATHS[@]}"; do
+    local wt_path="${WT_PATHS[$i]}"
+    local wt_branch="${WT_BRANCHES[$i]}"
+
+    # Skip main worktree
+    if [[ "$wt_path" == "$main_path" ]]; then
+      continue
+    fi
+
+    # Skip detached / unknown
+    if [[ "$wt_branch" == "(detached)" || "$wt_branch" == "???" ]]; then
+      continue
+    fi
+
+    # Check if merged
+    if git branch --merged "$base" | grep -q "$wt_branch"; then
+      clean_paths+=("$wt_path")
+      clean_branches+=("$wt_branch")
+    fi
+  done
+
+  if [[ ${#clean_paths[@]} -eq 0 ]]; then
+    info "No merged worktrees to clean up."
+    return
+  fi
+
+  # List worktrees that will be removed
+  warn "The following merged worktrees will be removed:"
+  echo ""
+  for i in "${!clean_paths[@]}"; do
+    echo "  - ${clean_branches[$i]} (${clean_paths[$i]})"
+  done
+  echo ""
+
+  if [[ "$force" != true ]]; then
+    read -r -p "Proceed? [y/N] " confirm
+    if [[ "$confirm" != [yY] ]]; then
+      info "Aborted."
+      return
+    fi
+  fi
+
+  local removed=0
+  for i in "${!clean_paths[@]}"; do
+    info "Removing ${clean_branches[$i]} (${clean_paths[$i]})..."
+    git worktree remove "${clean_paths[$i]}" --force 2>/dev/null || true
+    git branch -d "${clean_branches[$i]}" 2>/dev/null || true
+    success "Removed ${clean_branches[$i]}"
+    removed=$((removed + 1))
+  done
+
+  success "Cleaned up $removed worktree(s)."
+}
+
+cmd_wt_help() {
+  cat <<EOF
+${BOLD}git-kiss worktree${NC} — manage git worktrees
+
+${BOLD}USAGE${NC}
+  gk wt <command> [args]
+
+${BOLD}COMMANDS${NC}
+  nf <name>          New worktree with feature branch (uses prefix + initials)
+  nb <name>          New worktree with plain branch
+  ls                 List all worktrees with status
+  rm <index|name>    Remove a worktree by index or branch name
+  clean              Remove all worktrees with merged branches
+
+${BOLD}EXAMPLES${NC}
+  gk wt nf login          Create worktree with feature/mj-login branch
+  gk wt nb hotfix-db       Create worktree with hotfix-db branch
+  gk wt ls                 List worktrees (numbered)
+  gk wt rm 2               Remove worktree #2
+  gk wt rm login           Remove worktree matching "login"
+  gk wt clean              Clean up merged worktrees
+
+EOF
+}
+
 cmd_help() {
   cat <<EOF
 ${BOLD}git-kiss${NC} v${VERSION} — Keep It Simple, Stupid git flow
@@ -503,6 +912,7 @@ ${BOLD}COMMANDS${NC}
   ds!          Deploy to staging (force push automatically)
   dp           Deploy to production (tag release, prompt to push)
   dp!          Deploy to production (tag release and push)
+  wt <cmd>     Worktree management (run 'gk wt help' for details)
   init         Initialize .gitkiss config in current repo
 
 ${BOLD}CONFIG${NC}
@@ -541,6 +951,7 @@ main() {
     ds)       cmd_ds "$@" ;;
     'ds!')    cmd_ds --force "$@" ;;
     rf)       cmd_rf "$@" ;;
+    wt)       cmd_wt "$@" ;;
     init)     cmd_init "$@" ;;
     help|--help|-h)    cmd_help ;;
     version|--version) cmd_version ;;
@@ -554,3 +965,6 @@ main() {
 }
 
 main "$@"
+
+# Post-command version check (once per day, non-blocking on failure)
+check_version || true
