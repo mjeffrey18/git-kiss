@@ -6,8 +6,8 @@ git-kiss (`gk`) is a single-file Bash CLI tool that wraps common git operations 
 
 ## Architecture
 
-- **Single script**: All logic is in `bin/gk` — no build step, no dependencies beyond git/bash
-- **Config**: Loaded from `~/.git-kiss` (global) and `.gitkiss` (per-repo), sourced as shell variables
+- **Single script**: All logic is in `bin/gk` — no build step, dependencies are git, bash, and jq (jq required for config parsing; `gh` only for `gk pr`)
+- **Config**: JSONC parsed with `jq`, loaded from three cascading layers: `~/.git-kiss.jsonc` (global) -> `.gitkiss.jsonc` (committed team) -> `.gitkiss.local.jsonc` (gitignored personal); later overrides earlier
 - **Two flows**: "Full" (main/develop/staging with tags) and "Simple" (main/feature only)
 - **Worktrees**: `gk wt` subcommands manage git worktrees as sibling directories (`repo--name`)
 - **Version check**: Runs after every command, compares against GitHub, checks once per day via timestamp file stored next to the binary
@@ -18,6 +18,7 @@ git-kiss (`gk`) is a single-file Bash CLI tool that wraps common git operations 
 - Feature branches must have the configured prefix (default `feature/`)
 - Commands with `!` suffix (e.g. `ff!`, `dp!`) skip confirmation prompts and auto-push
 - Exit early with `die()` on errors — script uses `set -euo pipefail`
+- Legacy shell `.gitkiss` is auto-migrated when interactive (prompts the user), or read in place when non-interactive; `gk migrate` performs the conversion explicitly, splitting team vs personal config and backing the original up to `.bak`
 
 ## Testing
 

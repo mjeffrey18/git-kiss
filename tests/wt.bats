@@ -344,3 +344,44 @@ EOF
   assert_success
   refute_output --partial "Copied"
 }
+
+@test "gk wt nf expands globs in worktree_copy (jsonc)" {
+  rm -f "$REPO_DIR/.gitkiss"
+  echo "a" > "$REPO_DIR/.env.local"
+  echo "b" > "$REPO_DIR/.env.prod"
+  cat > "$REPO_DIR/.gitkiss.jsonc" <<'EOF'
+{ "main_branch": "main", "develop_branch": "", "staging_branch": "",
+  "feature_prefix": "feature/", "use_tags": false }
+EOF
+  cat > "$REPO_DIR/.gitkiss.local.jsonc" <<'EOF'
+{ "worktree_copy": [".env.*"] }
+EOF
+  git add -A && git commit -m "glob config" >/dev/null 2>&1
+  git push origin main >/dev/null 2>&1
+
+  run bash "$GK" wt nf globber
+  assert_success
+  assert_output --partial "Copied 2 item(s)"
+
+  local wt_dir
+  wt_dir="$(dirname "$REPO_DIR")/$(basename "$REPO_DIR")--globber"
+  [ -f "$wt_dir/.env.local" ]
+  [ -f "$wt_dir/.env.prod" ]
+}
+
+@test "gk wt nf glob with no matches copies nothing" {
+  rm -f "$REPO_DIR/.gitkiss"
+  cat > "$REPO_DIR/.gitkiss.jsonc" <<'EOF'
+{ "main_branch": "main", "develop_branch": "", "staging_branch": "",
+  "feature_prefix": "feature/", "use_tags": false }
+EOF
+  cat > "$REPO_DIR/.gitkiss.local.jsonc" <<'EOF'
+{ "worktree_copy": ["nope.*"] }
+EOF
+  git add -A && git commit -m "glob config" >/dev/null 2>&1
+  git push origin main >/dev/null 2>&1
+
+  run bash "$GK" wt nf nomatch
+  assert_success
+  refute_output --partial "Copied"
+}

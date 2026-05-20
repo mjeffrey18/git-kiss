@@ -1,0 +1,10 @@
+# git-kiss config
+# Docs: https://github.com/marcjeffrey/git-kiss
+
+MAIN_BRANCH=main
+DEVELOP_BRANCH=
+STAGING_BRANCH=
+FEATURE_PREFIX=feature/
+USE_TAGS=false
+INITIALS=mj
+WORKTREE_COPY=".gitkiss"

@@ -20,7 +20,7 @@ curl -fsSL https://raw.githubusercontent.com/mjeffrey18/git-kiss/main/install.sh
 
 ```bash
 cd your-repo
-gk init              # create a .gitkiss config (choose full or simple flow)
+gk init              # create a JSONC config (choose full or simple flow)
 gk nf <feature-name> # start a feature branch
 # ... make changes, commit ...
 gk pf                # publish branch to remote
@@ -43,7 +43,7 @@ gk ff                # finish feature (merge into base branch)
 | `gk ds` / `ds!`   | **Deploy staging** — rebase feature onto staging branch                 |
 | `gk dp` / `dp!`   | **Deploy production** — rebase develop into main and tag a release      |
 | `gk wt <cmd>`     | **Worktree** — manage git worktrees (see below)                         |
-| `gk init`         | **Init** — generate a `.gitkiss` config file                            |
+| `gk init`         | **Init** — generate a `.gitkiss.jsonc` config file                      |
 | `gk help`         | **Help** — show usage                                                   |
 
 ### Pull Requests
@@ -74,19 +74,26 @@ gk pr "Refactor auth" --body "Switched to JWT tokens"
 | `gk wt ls`        | List all worktrees with status                             |
 | `gk wt rm <id>`   | Remove a worktree by index or branch name                  |
 | `gk wt clean`     | Remove all worktrees with merged branches                  |
-| `wtco`            | Checkout a worktree interactively and `cd` into it (alias) |
+| `gk wt co`        | Interactively select a worktree (cds into it when shell-init is enabled) |
 
 ```bash
 gk wt nf task1      # create worktree with feature/mj-task1 branch
 gk wt nb hotfix-db  # create worktree with hotfix-db branch
 gk wt ls            # list all worktrees (numbered)
-wtco                # interactively switch to a worktree (see below)
+gk wt co            # interactively switch to a worktree (see below)
 gk wt rm 2          # remove worktree #2
 gk wt rm task1      # remove worktree matching "task1"
 gk wt clean         # clean up merged worktrees
 ```
 
-To enable `wtco`, add this alias to your `~/.bashrc` or `~/.zshrc`:
+To get `gk wt co` to `cd` you straight into the chosen worktree, add shell integration
+to your `~/.bashrc` or `~/.zshrc`:
+
+```bash
+eval "$(gk shell-init)"
+```
+
+Alternatively, you can add a manual alias if you prefer not to wrap `gk`:
 
 ```bash
 alias wtco='cd $(gk wt co)'
@@ -197,48 +204,52 @@ The result is a clean, readable history:
 
 ## Configuration
 
-git-kiss looks for config in two places (repo overrides global):
+git-kiss reads JSONC config from up to three cascading layers. Each later layer
+overrides keys set by earlier ones, so you only set what you want to change:
 
-| Location      | Scope                                                 |
-| ------------- | ----------------------------------------------------- |
-| `~/.git-kiss` | Global defaults for all repos                         |
-| `.gitkiss`    | Per-repo config (commit this to share with your team) |
+| Location               | Scope                                   | Tracked    |
+| ---------------------- | --------------------------------------- | ---------- |
+| `~/.git-kiss.jsonc`    | global personal defaults for all repos  | n/a        |
+| `.gitkiss.jsonc`       | per-repo team config                    | commit it  |
+| `.gitkiss.local.jsonc` | per-repo personal overrides             | gitignored |
 
-Run `gk init` to generate a config interactively, or create one manually:
+Run `gk init` to generate config, or `gk migrate` to upgrade a pre-JSONC `.gitkiss`.
 
-```bash
-# Full flow
-MAIN_BRANCH=main
-DEVELOP_BRANCH=develop
-STAGING_BRANCH=staging
-FEATURE_PREFIX=feature/
-USE_TAGS=true
-INITIALS=
+```jsonc
+// .gitkiss.jsonc - committed team config
+{
+  "main_branch": "main",
+  "develop_branch": "develop",
+  "staging_branch": "staging",
+  "feature_prefix": "feature/",
+  "use_tags": true
+}
 ```
 
-```bash
-# Simple flow
-MAIN_BRANCH=main
-DEVELOP_BRANCH=
-STAGING_BRANCH=
-FEATURE_PREFIX=feature/
-USE_TAGS=false
-INITIALS=
+```jsonc
+// .gitkiss.local.jsonc - gitignored personal overrides
+{
+  "initials": "mj",
+  "worktree_copy": [".env*", "config/local"]
+}
 ```
 
-| Key              | Default    | Description                                                                     |
-| ---------------- | ---------- | ------------------------------------------------------------------------------- |
-| `MAIN_BRANCH`    | `main`     | Production branch                                                               |
-| `DEVELOP_BRANCH` | `develop`  | Integration branch (leave empty for simple flow)                                |
-| `STAGING_BRANCH` | `staging`  | Staging branch (leave empty if unused)                                          |
-| `FEATURE_PREFIX` | `feature/` | Prefix for feature branches                                                     |
-| `USE_TAGS`       | `true`     | Auto-increment semver tags on `gk dp`                                           |
-| `INITIALS`       |            | Your initials, prepended to feature branches (e.g. `mj`)                        |
-| `WORKTREE_COPY`  |            | Space-separated files/folders to copy into new worktrees (e.g. `.gitkiss .env`) |
+| Key              | Default    | Description                                                     |
+| ---------------- | ---------- | --------------------------------------------------------------- |
+| `main_branch`    | `main`     | Production branch                                               |
+| `develop_branch` | `develop`  | Integration branch (`""` for simple flow)                       |
+| `staging_branch` | `staging`  | Staging branch (`""` if unused)                                 |
+| `feature_prefix` | `feature/` | Prefix for feature branches                                     |
+| `use_tags`       | `true`     | Auto-increment semver tags on `gk dp`                           |
+| `initials`       |            | Prepended to feature branches (e.g. `mj`) - usually in `.local` |
+| `worktree_copy`  | `[]`       | Files/folders (literal or glob) copied into new worktrees       |
+
+> Comments must be on their own line (`//`). Inline and `/* */` comments aren't supported.
 
 ## Requirements
 
 - **git** (obviously)
+- **jq** - required for reading config. `brew install jq` (macOS) / `apt install jq` (Linux).
 - **gh** (GitHub CLI) — only needed for `gk pr`. [Install here](https://cli.github.com).
 
 ## License
