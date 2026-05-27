@@ -1,0 +1,6 @@
+// git-kiss personal config - DO NOT commit (gitignored).
+// Overrides team config for just you. worktree_copy entries may be literal paths or globs.
+{
+  "initials": "mj",
+  "worktree_copy": [".env*", "config/local"]
+}

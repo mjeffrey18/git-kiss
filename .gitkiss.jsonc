@@ -1,0 +1,9 @@
+// git-kiss team config - commit this
+// Docs: https://github.com/mjeffrey18/git-kiss
+{
+  "main_branch": "main",
+  "develop_branch": "",
+  "staging_branch": "",
+  "feature_prefix": "feature/",
+  "use_tags": false
+}

@@ -77,6 +77,11 @@ EOF
 
 # Clean up temp directories
 teardown_test_repo() {
+  if [[ -n "${ORIG_HOME:-}" ]]; then
+    rm -rf "$HOME" 2>/dev/null || true
+    export HOME="$ORIG_HOME"
+    unset ORIG_HOME
+  fi
   if [[ -n "${REPO_DIR:-}" && -d "$REPO_DIR" ]]; then
     rm -rf "$REPO_DIR"
   fi
@@ -105,4 +110,15 @@ create_feature_branch() {
   echo "feature work" > "feature-$name.txt"
   git add -A >/dev/null 2>&1
   git commit -m "add $name" >/dev/null 2>&1
+}
+
+# Point HOME at a throwaway dir so global config / version stamp don't touch real $HOME.
+set_temp_home() {
+  export ORIG_HOME="${ORIG_HOME:-$HOME}"
+  export HOME="$(mktemp -d)"
+}
+
+# Read a value from a JSONC file (strips full-line // comments first).
+jget() {
+  grep -v '^[[:space:]]*//' "$1" | jq -r "$2"
 }
