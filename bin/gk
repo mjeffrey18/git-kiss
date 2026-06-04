@@ -844,12 +844,42 @@ worktree_dir_name() {
   echo "$(dirname "$main_path")/${repo}--${name}"
 }
 
+# Read a .worktreeinclude file (.gitignore-style: one glob per line, blank lines
+# and lines beginning with '#' ignored, trailing whitespace and CRLF tolerated)
+# and print one cleaned pattern per line.
+read_worktreeinclude() {
+  local file="$1"
+  [[ -f "$file" ]] || return 0
+  local line
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line%$'\r'}"                     # strip trailing CR (CRLF files)
+    line="${line%"${line##*[![:space:]]}"}"  # strip trailing whitespace
+    [[ -z "$line" ]] && continue             # skip blank lines
+    [[ "$line" == '#'* ]] && continue        # skip comments
+    printf '%s\n' "$line"
+  done < "$file"
+}
+
 copy_worktree_files() {
   local wt_path="$1"
   local main_path
   main_path="$(main_worktree_path)"
 
-  if [[ ${#WORKTREE_COPY[@]} -eq 0 ]]; then
+  # Combine the worktree_copy config array with patterns from a .worktreeinclude
+  # file in the project root into one deduplicated list of copy patterns.
+  local -a patterns=()
+  local _p _seen=$'\n'
+  while IFS= read -r _p; do
+    [[ -z "$_p" ]] && continue
+    case "$_seen" in *$'\n'"$_p"$'\n'*) continue ;; esac
+    patterns+=("$_p")
+    _seen="${_seen}${_p}"$'\n'
+  done < <(
+    for _p in "${WORKTREE_COPY[@]:-}"; do [[ -n "$_p" ]] && printf '%s\n' "$_p"; done
+    read_worktreeinclude "$main_path/.worktreeinclude"
+  )
+
+  if [[ ${#patterns[@]} -eq 0 ]]; then
     return
   fi
 
@@ -859,25 +889,28 @@ copy_worktree_files() {
   shopt -s nullglob dotglob
   trap "eval $(printf '%q' "$saved_nullglob"); eval $(printf '%q' "$saved_dotglob"); trap - RETURN" RETURN
 
-  local copied=0 pattern src rel dest matched
-  for pattern in "${WORKTREE_COPY[@]}"; do
+  local copied=0 pattern src rel dest matched _done=$'\n'
+  for pattern in "${patterns[@]}"; do
     [[ -z "$pattern" ]] && continue
     matched=0
     for src in "$main_path"/$pattern; do
       [[ -e "$src" ]] || continue
+      matched=1
+      # A file may be matched by more than one pattern; copy it only once.
+      case "$_done" in *$'\n'"$src"$'\n'*) continue ;; esac
+      _done="${_done}${src}"$'\n'
       rel="${src#"$main_path"/}"
       dest="$wt_path/$rel"
       mkdir -p "$(dirname "$dest")"
       cp -a "$src" "$dest"
       debug "worktree copy: $rel"
       copied=$((copied + 1))
-      matched=1
     done
     [[ "$matched" -eq 0 ]] && debug "worktree copy: no match for '$pattern'"
   done
 
   if [[ "$copied" -gt 0 ]]; then
-    info "Copied $copied item(s) from worktree_copy config"
+    info "Copied $copied item(s) into worktree"
   fi
 }
 
@@ -1220,9 +1253,12 @@ ${BOLD}EXAMPLES${NC}
   gk wt clean              Clean up merged worktrees
 
 ${BOLD}CONFIG${NC}
-  worktree_copy   JSON array of files/folders (literal paths or globs) copied into
-                  new worktrees. Useful for gitignored files like .env.
-                  Example (.gitkiss.local.jsonc): "worktree_copy": [".env*", "config/local"]
+  worktree_copy     JSON array of files/folders (literal paths or globs) copied into
+                    new worktrees. Useful for gitignored files like .env.
+                    Example (.gitkiss.local.jsonc): "worktree_copy": [".env*", "config/local"]
+  .worktreeinclude  Optional file in the project root, .gitignore-style (one glob per
+                    line, # comments, blank lines ignored). Merged with worktree_copy
+                    into a single list; matches from both are copied into new worktrees.
 
 ${BOLD}TIP${NC}
   Add shell integration so 'gk wt co' cds you straight there:

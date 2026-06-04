@@ -57,7 +57,7 @@ gk pr "Update API" --reviewer octocat --label enhancement
 gk pr "Refactor auth" --body "Switched to JWT tokens"
 ```
 
-### Worktrees
+## Worktrees
 
 `gk wt` makes it easy to work on multiple branches simultaneously using [git worktrees](https://git-scm.com/docs/git-worktree). Each worktree gets its own directory as a sibling to your main repo:
 
@@ -67,13 +67,13 @@ gk pr "Refactor auth" --body "Switched to JWT tokens"
 ~/projects/my-repo--hotfix-db/   ← gk wt nb hotfix-db
 ```
 
-| Command           | Description                                                |
-| ----------------- | ---------------------------------------------------------- |
-| `gk wt nf <name>` | New worktree with a feature branch (uses prefix/initials)  |
-| `gk wt nb <name>` | New worktree with a plain branch                           |
-| `gk wt ls`        | List all worktrees with status                             |
-| `gk wt rm <id>`   | Remove a worktree by index or branch name                  |
-| `gk wt clean`     | Remove all worktrees with merged branches                  |
+| Command           | Description                                                              |
+| ----------------- | ------------------------------------------------------------------------ |
+| `gk wt nf <name>` | New worktree with a feature branch (uses prefix/initials)                |
+| `gk wt nb <name>` | New worktree with a plain branch                                         |
+| `gk wt ls`        | List all worktrees with status                                           |
+| `gk wt rm <id>`   | Remove a worktree by index or branch name                                |
+| `gk wt clean`     | Remove all worktrees with merged branches                                |
 | `gk wt co`        | Interactively select a worktree (cds into it when shell-init is enabled) |
 
 ```bash
@@ -85,6 +85,43 @@ gk wt rm 2          # remove worktree #2
 gk wt rm task1      # remove worktree matching "task1"
 gk wt clean         # clean up merged worktrees
 ```
+
+### Seeding files into new worktrees
+
+A new worktree is a fresh checkout of the base branch, so anything you don't commit — `.env` files, local config, editor settings — won't be there. git-kiss can copy those over automatically from your main worktree when it creates one.
+
+There are two sources, **merged and de-duplicated** into a single list:
+
+| Source                                     | Tracked         | Best for                                    |
+| ------------------------------------------ | --------------- | ------------------------------------------- |
+| `.worktreeinclude` in the project root     | commit it       | team-wide defaults, shared by everyone      |
+| `worktree_copy` in your `.gitkiss.*.jsonc` | varies by layer | personal additions (`.gitkiss.local.jsonc`) |
+
+#### .worktreeinclude
+
+`.worktreeinclude` uses the same format as `.gitignore` — one glob per line, `#` comments, blank lines ignored:
+
+```gitignore
+.env
+.env.*
+config/local
+.vscode/settings.json
+```
+
+#### worktree_copy (.gitkiss.jsonc / .gitkiss.local.jsonc)
+
+`worktree_copy` is the JSON-array equivalent, set in any config layer:
+
+```jsonc
+// .gitkiss.local.jsonc - gitignored personal overrides
+{
+  "worktree_copy": [".env*", "config/local"],
+}
+```
+
+Both are resolved as shell globs **relative to the project root** and copied from your main worktree's current working tree (so uncommitted files come across too). A path listed in both sources is copied only once.
+
+### Navigating between worktrees
 
 To get `gk wt co` to `cd` you straight into the chosen worktree, add shell integration
 to your `~/.bashrc` or `~/.zshrc`:
@@ -98,6 +135,8 @@ Alternatively, you can add a manual alias if you prefer not to wrap `gk`:
 ```bash
 alias wtco='cd $(gk wt co)'
 ```
+
+### Worktree status
 
 `gk wt ls` output:
 
@@ -207,11 +246,11 @@ The result is a clean, readable history:
 git-kiss reads JSONC config from up to three cascading layers. Each later layer
 overrides keys set by earlier ones, so you only set what you want to change:
 
-| Location               | Scope                                   | Tracked    |
-| ---------------------- | --------------------------------------- | ---------- |
-| `~/.git-kiss.jsonc`    | global personal defaults for all repos  | n/a        |
-| `.gitkiss.jsonc`       | per-repo team config                    | commit it  |
-| `.gitkiss.local.jsonc` | per-repo personal overrides             | gitignored |
+| Location               | Scope                                  | Tracked    |
+| ---------------------- | -------------------------------------- | ---------- |
+| `~/.git-kiss.jsonc`    | global personal defaults for all repos | n/a        |
+| `.gitkiss.jsonc`       | per-repo team config                   | commit it  |
+| `.gitkiss.local.jsonc` | per-repo personal overrides            | gitignored |
 
 Run `gk init` to generate config, or `gk migrate` to upgrade a pre-JSONC `.gitkiss`.
 
@@ -222,7 +261,7 @@ Run `gk init` to generate config, or `gk migrate` to upgrade a pre-JSONC `.gitki
   "develop_branch": "develop",
   "staging_branch": "staging",
   "feature_prefix": "feature/",
-  "use_tags": true
+  "use_tags": true,
 }
 ```
 
@@ -230,19 +269,19 @@ Run `gk init` to generate config, or `gk migrate` to upgrade a pre-JSONC `.gitki
 // .gitkiss.local.jsonc - gitignored personal overrides
 {
   "initials": "mj",
-  "worktree_copy": [".env*", "config/local"]
+  "worktree_copy": [".env*", "config/local"],
 }
 ```
 
-| Key              | Default    | Description                                                     |
-| ---------------- | ---------- | --------------------------------------------------------------- |
-| `main_branch`    | `main`     | Production branch                                               |
-| `develop_branch` | `develop`  | Integration branch (`""` for simple flow)                       |
-| `staging_branch` | `staging`  | Staging branch (`""` if unused)                                 |
-| `feature_prefix` | `feature/` | Prefix for feature branches                                     |
-| `use_tags`       | `true`     | Auto-increment semver tags on `gk dp`                           |
-| `initials`       |            | Prepended to feature branches (e.g. `mj`) - usually in `.local` |
-| `worktree_copy`  | `[]`       | Files/folders (literal or glob) copied into new worktrees       |
+| Key              | Default    | Description                                                                                                              |
+| ---------------- | ---------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `main_branch`    | `main`     | Production branch                                                                                                        |
+| `develop_branch` | `develop`  | Integration branch (`""` for simple flow)                                                                                |
+| `staging_branch` | `staging`  | Staging branch (`""` if unused)                                                                                          |
+| `feature_prefix` | `feature/` | Prefix for feature branches                                                                                              |
+| `use_tags`       | `true`     | Auto-increment semver tags on `gk dp`                                                                                    |
+| `initials`       |            | Prepended to feature branches (e.g. `mj`) - usually in `.local`                                                          |
+| `worktree_copy`  | `[]`       | Files/folders (literal or glob) copied into new worktrees (merged with `.worktreeinclude` — see [Worktrees](#worktrees)) |
 
 > Comments must be on their own line (`//`). Inline and `/* */` comments aren't supported.
 

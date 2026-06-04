@@ -385,3 +385,118 @@ EOF
   assert_success
   refute_output --partial "Copied"
 }
+
+# ─── .worktreeinclude ──────────────────────────────────────────────────────
+
+@test "gk wt nf copies files listed in .worktreeinclude" {
+  echo "secret=123" > "$REPO_DIR/.env"
+  mkdir -p "$REPO_DIR/config/local"
+  echo "local_setting=true" > "$REPO_DIR/config/local/dev.conf"
+
+  cat > "$REPO_DIR/.worktreeinclude" <<'EOF'
+# gitignored files to seed into new worktrees
+.env
+
+config/local
+EOF
+
+  run bash "$GK" wt nf includer
+  assert_success
+  assert_output --partial "Copied 2 item(s)"
+
+  local wt_dir
+  wt_dir="$(dirname "$REPO_DIR")/$(basename "$REPO_DIR")--includer"
+  [ -f "$wt_dir/.env" ]
+  [ -f "$wt_dir/config/local/dev.conf" ]
+}
+
+@test "gk wt nf ignores comments and blank lines in .worktreeinclude" {
+  echo "v=1" > "$REPO_DIR/.env"
+  printf '\n# only a comment\n\n   \n.env\n' > "$REPO_DIR/.worktreeinclude"
+
+  run bash "$GK" wt nf commented
+  assert_success
+  assert_output --partial "Copied 1 item(s)"
+
+  local wt_dir
+  wt_dir="$(dirname "$REPO_DIR")/$(basename "$REPO_DIR")--commented"
+  [ -f "$wt_dir/.env" ]
+}
+
+@test "gk wt nf expands globs from .worktreeinclude" {
+  echo "a" > "$REPO_DIR/.env.local"
+  echo "b" > "$REPO_DIR/.env.prod"
+  echo '.env.*' > "$REPO_DIR/.worktreeinclude"
+
+  run bash "$GK" wt nf globinc
+  assert_success
+  assert_output --partial "Copied 2 item(s)"
+
+  local wt_dir
+  wt_dir="$(dirname "$REPO_DIR")/$(basename "$REPO_DIR")--globinc"
+  [ -f "$wt_dir/.env.local" ]
+  [ -f "$wt_dir/.env.prod" ]
+}
+
+@test "gk wt nf merges worktree_copy config with .worktreeinclude" {
+  rm -f "$REPO_DIR/.gitkiss"
+  cat > "$REPO_DIR/.gitkiss.jsonc" <<'EOF'
+{ "main_branch": "main", "develop_branch": "", "staging_branch": "",
+  "feature_prefix": "feature/", "use_tags": false }
+EOF
+  cat > "$REPO_DIR/.gitkiss.local.jsonc" <<'EOF'
+{ "worktree_copy": [".env"] }
+EOF
+  git add -A && git commit -m "config" >/dev/null 2>&1
+  git push origin main >/dev/null 2>&1
+
+  echo "from-config" > "$REPO_DIR/.env"
+  echo "from-include" > "$REPO_DIR/local.conf"
+  echo 'local.conf' > "$REPO_DIR/.worktreeinclude"
+
+  run bash "$GK" wt nf merged
+  assert_success
+  assert_output --partial "Copied 2 item(s)"
+
+  local wt_dir
+  wt_dir="$(dirname "$REPO_DIR")/$(basename "$REPO_DIR")--merged"
+  [ -f "$wt_dir/.env" ]
+  [ -f "$wt_dir/local.conf" ]
+}
+
+@test "gk wt nf copies a file in both worktree_copy and .worktreeinclude only once" {
+  rm -f "$REPO_DIR/.gitkiss"
+  cat > "$REPO_DIR/.gitkiss.jsonc" <<'EOF'
+{ "main_branch": "main", "develop_branch": "", "staging_branch": "",
+  "feature_prefix": "feature/", "use_tags": false }
+EOF
+  cat > "$REPO_DIR/.gitkiss.local.jsonc" <<'EOF'
+{ "worktree_copy": [".env"] }
+EOF
+  git add -A && git commit -m "config" >/dev/null 2>&1
+  git push origin main >/dev/null 2>&1
+
+  echo "v=1" > "$REPO_DIR/.env"
+  echo '.env' > "$REPO_DIR/.worktreeinclude"
+
+  run bash "$GK" wt nf deduped
+  assert_success
+  assert_output --partial "Copied 1 item(s)"
+
+  local wt_dir
+  wt_dir="$(dirname "$REPO_DIR")/$(basename "$REPO_DIR")--deduped"
+  [ -f "$wt_dir/.env" ]
+}
+
+@test "gk wt nb copies files listed in .worktreeinclude" {
+  echo "v=1" > "$REPO_DIR/.env"
+  echo '.env' > "$REPO_DIR/.worktreeinclude"
+
+  run bash "$GK" wt nb hotfix-db
+  assert_success
+  assert_output --partial "Copied 1 item(s)"
+
+  local wt_dir
+  wt_dir="$(dirname "$REPO_DIR")/$(basename "$REPO_DIR")--hotfix-db"
+  [ -f "$wt_dir/.env" ]
+}

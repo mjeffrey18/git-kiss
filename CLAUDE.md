@@ -9,7 +9,7 @@ git-kiss (`gk`) is a single-file Bash CLI tool that wraps common git operations 
 - **Single script**: All logic is in `bin/gk` — no build step, dependencies are git, bash, and jq (jq required for config parsing; `gh` only for `gk pr`)
 - **Config**: JSONC parsed with `jq`, loaded from three cascading layers: `~/.git-kiss.jsonc` (global) -> `.gitkiss.jsonc` (committed team) -> `.gitkiss.local.jsonc` (gitignored personal); later overrides earlier
 - **Two flows**: "Full" (main/develop/staging with tags) and "Simple" (main/feature only)
-- **Worktrees**: `gk wt` subcommands manage git worktrees as sibling directories (`repo--name`)
+- **Worktrees**: `gk wt` subcommands manage git worktrees as sibling directories (`repo--name`). When a worktree is created, files are seeded into it by combining the `worktree_copy` config array with patterns from an optional `.worktreeinclude` file in the project root (`.gitignore`-style: one glob per line, `#` comments, blank lines ignored); the two sources are merged and deduplicated
 - **Version check**: Runs after every command, compares against GitHub, checks once per day via timestamp file stored next to the binary
 
 ## Key Conventions
@@ -32,6 +32,7 @@ bats tests/wt.bats   # run a single test file
 Each test creates a temp git repo with a bare remote in `setup()` and cleans up in `teardown()`. Shared helpers are in `tests/test_helper/setup.bash`.
 
 When writing tests:
+
 - Config changes must be committed (and pushed if the command pulls from origin) to avoid dirty tree errors
 - Interactive commands (`read -r -p`) will hang in tests — use the `!` force variants
 - The `GK` variable points to `bin/gk` relative to the test directory
