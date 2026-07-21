@@ -10,12 +10,22 @@ GK="${BATS_TEST_DIRNAME}/../bin/gk"
 
 # Create a fresh git repo with a remote (bare) for each test
 setup_test_repo() {
+  # Isolate $HOME so no test reads/writes the real global config or version stamp.
+  set_temp_home
+  # Never let the version check stamp a file or hit the network during tests.
+  export GK_NO_VERSION_CHECK=1
+
+  # All test dirs live inside BATS_TEST_TMPDIR so bats owns their deletion -
+  # teardown never has to run a destructive command itself.
+
   # Create a bare "remote" repo
-  export REMOTE_DIR="$(mktemp -d)"
+  export REMOTE_DIR="$BATS_TEST_TMPDIR/remote"
+  mkdir -p "$REMOTE_DIR"
   git init --bare "$REMOTE_DIR" >/dev/null 2>&1
 
   # Create the working repo
-  export REPO_DIR="$(mktemp -d)"
+  export REPO_DIR="$BATS_TEST_TMPDIR/repo"
+  mkdir -p "$REPO_DIR"
   cd "$REPO_DIR"
   git init >/dev/null 2>&1
   git checkout -b main >/dev/null 2>&1
@@ -34,14 +44,7 @@ setup_test_repo() {
   git push -u origin main >/dev/null 2>&1
 
   # Write a simple flow .gitkiss config and commit it so tree stays clean
-  cat > "$REPO_DIR/.gitkiss" <<EOF
-MAIN_BRANCH=main
-DEVELOP_BRANCH=
-STAGING_BRANCH=
-FEATURE_PREFIX=feature/
-USE_TAGS=false
-INITIALS=
-EOF
+  write_legacy_config "$REPO_DIR/.gitkiss"
   git add .gitkiss
   git commit -m "add gitkiss config" >/dev/null 2>&1
   git push origin main >/dev/null 2>&1
@@ -52,14 +55,7 @@ setup_full_flow_repo() {
   setup_test_repo
 
   # Update config for full flow on main first
-  cat > "$REPO_DIR/.gitkiss" <<EOF
-MAIN_BRANCH=main
-DEVELOP_BRANCH=develop
-STAGING_BRANCH=staging
-FEATURE_PREFIX=feature/
-USE_TAGS=true
-INITIALS=
-EOF
+  write_legacy_config "$REPO_DIR/.gitkiss" DEVELOP_BRANCH=develop STAGING_BRANCH=staging USE_TAGS=true
   git add .gitkiss
   git commit -m "update gitkiss config" >/dev/null 2>&1
   git push origin main >/dev/null 2>&1
@@ -75,30 +71,14 @@ EOF
   git checkout develop >/dev/null 2>&1
 }
 
-# Clean up temp directories
+# Restore the environment after each test. All temp dirs (temp home, repo,
+# remote, worktree siblings) live inside BATS_TEST_TMPDIR, which bats deletes
+# itself after the test - nothing in this suite may ever delete $HOME or run
+# its own recursive removal.
 teardown_test_repo() {
   if [[ -n "${ORIG_HOME:-}" ]]; then
-    rm -rf "$HOME" 2>/dev/null || true
     export HOME="$ORIG_HOME"
     unset ORIG_HOME
-  fi
-  if [[ -n "${REPO_DIR:-}" && -d "$REPO_DIR" ]]; then
-    rm -rf "$REPO_DIR"
-  fi
-  if [[ -n "${REMOTE_DIR:-}" && -d "$REMOTE_DIR" ]]; then
-    rm -rf "$REMOTE_DIR"
-  fi
-  # Clean up any worktree sibling directories
-  if [[ -n "${REPO_DIR:-}" ]]; then
-    local parent
-    parent="$(dirname "$REPO_DIR")"
-    local base
-    base="$(basename "$REPO_DIR")"
-    for wt_dir in "$parent/${base}"--*; do
-      if [[ -d "$wt_dir" ]]; then
-        rm -rf "$wt_dir"
-      fi
-    done
   fi
 }
 
@@ -112,10 +92,49 @@ create_feature_branch() {
   git commit -m "add $name" >/dev/null 2>&1
 }
 
-# Point HOME at a throwaway dir so global config / version stamp don't touch real $HOME.
+# Point HOME at a throwaway dir so global config / version stamp don't touch
+# real $HOME. The dir lives inside BATS_TEST_TMPDIR so bats deletes it - the
+# suite itself never removes $HOME, only restores it in teardown_test_repo.
 set_temp_home() {
+  : "${BATS_TEST_TMPDIR:?set_temp_home requires bats (BATS_TEST_TMPDIR unset)}"
   export ORIG_HOME="${ORIG_HOME:-$HOME}"
-  export HOME="$(mktemp -d)"
+  export HOME="$BATS_TEST_TMPDIR/home"
+  mkdir -p "$HOME"
+}
+
+# Write a legacy shell-format .gitkiss config to $1. Remaining args are KEY=VALUE
+# overrides on top of the simple-flow defaults. Valid keys:
+#   MAIN_BRANCH DEVELOP_BRANCH STAGING_BRANCH FEATURE_PREFIX USE_TAGS INITIALS WORKTREE_COPY
+# WORKTREE_COPY is only emitted when explicitly provided (kept quoted, legacy style).
+write_legacy_config() {
+  local path="$1"; shift
+  local MAIN_BRANCH="main" DEVELOP_BRANCH="" STAGING_BRANCH="" \
+        FEATURE_PREFIX="feature/" USE_TAGS="false" INITIALS=""
+  local worktree_copy_set=0 WORKTREE_COPY=""
+  local kv
+  for kv in "$@"; do
+    case "$kv" in
+      MAIN_BRANCH=*)    MAIN_BRANCH="${kv#*=}" ;;
+      DEVELOP_BRANCH=*) DEVELOP_BRANCH="${kv#*=}" ;;
+      STAGING_BRANCH=*) STAGING_BRANCH="${kv#*=}" ;;
+      FEATURE_PREFIX=*) FEATURE_PREFIX="${kv#*=}" ;;
+      USE_TAGS=*)       USE_TAGS="${kv#*=}" ;;
+      INITIALS=*)       INITIALS="${kv#*=}" ;;
+      WORKTREE_COPY=*)  WORKTREE_COPY="${kv#*=}"; worktree_copy_set=1 ;;
+      *) echo "write_legacy_config: unknown key '$kv'" >&2; return 1 ;;
+    esac
+  done
+  {
+    echo "MAIN_BRANCH=$MAIN_BRANCH"
+    echo "DEVELOP_BRANCH=$DEVELOP_BRANCH"
+    echo "STAGING_BRANCH=$STAGING_BRANCH"
+    echo "FEATURE_PREFIX=$FEATURE_PREFIX"
+    echo "USE_TAGS=$USE_TAGS"
+    echo "INITIALS=$INITIALS"
+    if [[ "$worktree_copy_set" == 1 ]]; then
+      echo "WORKTREE_COPY=\"$WORKTREE_COPY\""
+    fi
+  } > "$path"
 }
 
 # Read a value from a JSONC file (strips full-line // comments first).

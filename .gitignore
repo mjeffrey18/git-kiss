@@ -1,2 +1,7 @@
 /.gitkiss
 .gitkiss.local.jsonc
+.DS_Store
+*.bak
+.ruby-lsp/
+.remember/
+.claude/settings.local.json

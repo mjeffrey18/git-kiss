@@ -10,14 +10,7 @@ teardown() {
 }
 
 @test "gk uses repo .gitkiss config" {
-  cat > "$REPO_DIR/.gitkiss" <<EOF
-MAIN_BRANCH=main
-DEVELOP_BRANCH=
-STAGING_BRANCH=
-FEATURE_PREFIX=feat/
-USE_TAGS=false
-INITIALS=ab
-EOF
+  write_legacy_config "$REPO_DIR/.gitkiss" FEATURE_PREFIX=feat/ INITIALS=ab
   git add .gitkiss && git commit -m "custom config" >/dev/null 2>&1
   git push origin main >/dev/null 2>&1
 
@@ -55,14 +48,7 @@ EOF
   git push origin main >/dev/null 2>&1
 
   # Write an untracked .gitkiss in the main repo only
-  cat > "$REPO_DIR/.gitkiss" <<EOF
-MAIN_BRANCH=main
-DEVELOP_BRANCH=
-STAGING_BRANCH=
-FEATURE_PREFIX=feat/
-USE_TAGS=false
-INITIALS=zz
-EOF
+  write_legacy_config "$REPO_DIR/.gitkiss" FEATURE_PREFIX=feat/ INITIALS=zz
 
   # Create a worktree — it won't have .gitkiss since it's untracked
   bash "$GK" wt nb test-wt >/dev/null 2>&1

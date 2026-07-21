@@ -35,14 +35,7 @@ teardown() {
 }
 
 @test "gk nf with initials prepends them" {
-  cat > "$REPO_DIR/.gitkiss" <<EOF
-MAIN_BRANCH=main
-DEVELOP_BRANCH=
-STAGING_BRANCH=
-FEATURE_PREFIX=feature/
-USE_TAGS=false
-INITIALS=mj
-EOF
+  write_legacy_config "$REPO_DIR/.gitkiss" INITIALS=mj
   git add .gitkiss && git commit -m "update config" >/dev/null 2>&1
   git push origin main >/dev/null 2>&1
 
@@ -63,14 +56,7 @@ EOF
   # Set up develop branch
   git checkout -b develop >/dev/null 2>&1
   echo "develop work" > develop.txt
-  cat > "$REPO_DIR/.gitkiss" <<EOF
-MAIN_BRANCH=main
-DEVELOP_BRANCH=develop
-STAGING_BRANCH=staging
-FEATURE_PREFIX=feature/
-USE_TAGS=true
-INITIALS=
-EOF
+  write_legacy_config "$REPO_DIR/.gitkiss" DEVELOP_BRANCH=develop STAGING_BRANCH=staging USE_TAGS=true
   git add -A && git commit -m "develop work" >/dev/null 2>&1
   git push -u origin develop >/dev/null 2>&1
 

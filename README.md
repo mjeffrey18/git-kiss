@@ -35,8 +35,9 @@ gk ff                # finish feature (merge into base branch)
 | ----------------- | ----------------------------------------------------------------------- |
 | `gk nf "<name>"`  | **New feature** — create a feature branch from the base branch          |
 | `gk ff` / `ff!`   | **Finish feature** — merge feature into base branch (merge commit)      |
-| `gk sf` / `sf!`   | **Squash feature** — rebase onto base and squash all commits into one   |
+| `gk sf` / `sf!`   | **Squash feature** — squash all commits on the branch into one          |
 | `gk cm "<msg>"`   | **Commit** — add all changes and commit with message                    |
+| `gk rc`           | **Reset commit** — undo the last commit, keeping changes unstaged       |
 | `gk pf`           | **Publish feature** — push feature branch to remote                     |
 | `gk pr "<title>"` | **Pull request** — create a PR via `gh` CLI (supports extra `gh` flags) |
 | `gk rf`           | **Rebase feature** — rebase feature against base branch                 |
@@ -44,6 +45,9 @@ gk ff                # finish feature (merge into base branch)
 | `gk dp` / `dp!`   | **Deploy production** — rebase develop into main and tag a release      |
 | `gk wt <cmd>`     | **Worktree** — manage git worktrees (see below)                         |
 | `gk init`         | **Init** — generate a `.gitkiss.jsonc` config file                      |
+| `gk migrate`      | **Migrate** — convert a legacy shell `.gitkiss` to JSONC config         |
+| `gk shell-init`   | **Shell init** — print shell integration for `gk wt co`                 |
+| `gk version`      | **Version** — print the installed version (`--version` too)             |
 | `gk help`         | **Help** — show usage                                                   |
 
 ### Pull Requests
@@ -72,8 +76,10 @@ gk pr "Refactor auth" --body "Switched to JWT tokens"
 | `gk wt nf <name>` | New worktree with a feature branch (uses prefix/initials)                |
 | `gk wt nb <name>` | New worktree with a plain branch                                         |
 | `gk wt ls`        | List all worktrees with status                                           |
-| `gk wt rm <id>`   | Remove a worktree by index or branch name                                |
-| `gk wt clean`     | Remove all worktrees with merged branches                                |
+| `gk wt rm <id>`   | Remove a worktree by index or branch name (prompts if dirty)             |
+| `gk wt rm! <id>`  | Remove a worktree, skipping the dirty-tree prompt                        |
+| `gk wt clean`     | Remove merged worktrees (skips any with uncommitted changes)             |
+| `gk wt clean!`    | Remove merged worktrees, including any with uncommitted changes          |
 | `gk wt co`        | Interactively select a worktree (cds into it when shell-init is enabled) |
 
 ```bash
@@ -284,6 +290,16 @@ Run `gk init` to generate config, or `gk migrate` to upgrade a pre-JSONC `.gitki
 | `worktree_copy`  | `[]`       | Files/folders (literal or glob) copied into new worktrees (merged with `.worktreeinclude` — see [Worktrees](#worktrees)) |
 
 > Comments must be on their own line (`//`). Inline and `/* */` comments aren't supported.
+
+## Updating
+
+`gk` checks GitHub for a newer release once a day and prints a one-line notice when an update is available - re-run the [curl installer](#install) to upgrade. The check runs after a command, never blocks it, and records the last-checked time in `~/.gk_version_check`.
+
+Set the `GK_NO_VERSION_CHECK` environment variable to any non-empty value to disable the check entirely (handy for CI or air-gapped machines):
+
+```bash
+export GK_NO_VERSION_CHECK=1
+```
 
 ## Requirements
 

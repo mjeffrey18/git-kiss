@@ -81,6 +81,11 @@ maybe_migrate_or_source() {
         return 0
       fi
       echo -e "${YELLOW}!${NC} Migration not available yet; using legacy file for now." >&2
+    else
+      # Declined: do not silently source the legacy shell file (it can execute
+      # arbitrary code). Ignore this layer so defaults / other layers apply.
+      echo -e "${YELLOW}!${NC} Ignoring legacy $legacy - run 'gk migrate' to upgrade when ready." >&2
+      return 0
     fi
   else
     echo -e "${YELLOW}!${NC} Using legacy $legacy — run 'gk migrate' to upgrade." >&2
@@ -126,6 +131,7 @@ legacy_worktree_copy_json() {
   fi
   # Intentionally unquoted to split on whitespace (legacy format); set -f disables
   # glob expansion so a literal pattern is not expanded against the cwd.
+  # shellcheck disable=SC2086  # deliberate word-splitting of the legacy space-separated list
   ( set -f; printf '%s\n' ${WORKTREE_COPY} ) | jq -R . | jq -sc .
 }
 
@@ -237,7 +243,7 @@ success() { echo -e "${GREEN}✓${NC} $*"; }
 warn()    { echo -e "${YELLOW}!${NC} $*"; }
 error()   { echo -e "${RED}✗${NC} $*" >&2; }
 die()     { error "$@"; exit 1; }
-debug()   { [[ "${GK_DEBUG:-}" == "1" ]] && echo -e "${DIM}[debug] $*${NC}" >&2 || true; }
+debug()   { if [[ "${GK_DEBUG:-}" == "1" ]]; then echo -e "${DIM}[debug] $*${NC}" >&2; fi; }
 
 current_branch() {
   git branch --show-current
@@ -286,6 +292,48 @@ require_command() {
     else
       die "'$cmd' is not installed."
     fi
+  fi
+}
+
+# ─── Conflict-safe git operations ─────────────────────────────────────────────
+# Wrap rebase-/merge-type git commands so a mid-operation conflict is reported
+# clearly rather than leaving the user staring at a raw git error. On failure we
+# print which operation failed, the branch they are now on, and the exact
+# recovery commands, then exit non-zero. The `if !` guard is deliberate: it stops
+# `set -e` from aborting the script before we can print the recovery hint.
+# Call as: run_rebase "<label>" rebase "$base"   (the leading 'git' is implied).
+
+run_rebase() {
+  local label="$1"; shift
+  if ! git "$@"; then
+    # Captured after the failure: mid-rebase HEAD is detached, so
+    # current_branch is empty and the fallback text applies.
+    local on
+    on="$(current_branch)"
+    echo "" >&2
+    error "$label failed - you have most likely hit a conflict."
+    error "You are now on: ${on:-(detached HEAD - rebase in progress)}"
+    echo "" >&2
+    echo "  Resolve the conflicts, then continue with:" >&2
+    echo "    git rebase --continue" >&2
+    echo "  Or abort to undo the rebase entirely:" >&2
+    echo "    git rebase --abort" >&2
+    exit 1
+  fi
+}
+
+run_merge() {
+  local label="$1"; shift
+  if ! git "$@"; then
+    local on
+    on="$(current_branch)"
+    echo "" >&2
+    error "$label failed - you have most likely hit a conflict."
+    error "You are now on: ${on:-(unknown)}"
+    echo "" >&2
+    echo "  Resolve the conflicts and commit, or abort with:" >&2
+    echo "    git merge --abort" >&2
+    exit 1
   fi
 }
 
@@ -344,6 +392,12 @@ apply_jsonc_layer() {
 # ─── Version Check ──────────────────────────────────────────────────────────
 
 check_version() {
+  # Escape hatch for tests / CI / air-gapped use: never stamp or hit the network.
+  if [[ -n "${GK_NO_VERSION_CHECK:-}" ]]; then
+    debug "version check: skipped (GK_NO_VERSION_CHECK set)"
+    return
+  fi
+
   local stamp_file="${HOME}/.gk_version_check"
   debug "version check: local=$VERSION stamp=$stamp_file"
 
@@ -389,7 +443,9 @@ check_version() {
   # Compare versions (only warn if remote is newer)
   if [[ "$remote_version" != "$VERSION" ]]; then
     local IFS='.'
+    # shellcheck disable=SC2206  # deliberate split on '.' into version components
     local -a local_parts=($VERSION)
+    # shellcheck disable=SC2206  # deliberate split on '.' into version components
     local -a remote_parts=($remote_version)
     local is_newer=false
 
@@ -421,6 +477,8 @@ check_version() {
 # ─── Commands ────────────────────────────────────────────────────────────────
 
 cmd_nf() {
+  require_clean_tree
+
   local name="${1:-}"
   if [[ -z "$name" ]]; then
     die "Usage: gk nf <feature-name>"
@@ -434,7 +492,7 @@ cmd_nf() {
 
   info "Checking out $base and pulling latest..."
   git checkout "$base"
-  git pull origin "$base" --rebase
+  run_rebase "Pull --rebase of $base" pull origin "$base" --rebase
 
   if [[ -n "$INITIALS" ]]; then
     name="${INITIALS}-${name}"
@@ -463,7 +521,7 @@ cmd_ff() {
 
   info "Pulling latest $base..."
   git checkout "$base"
-  git pull origin "$base" --rebase
+  run_rebase "Pull --rebase of $base" pull origin "$base" --rebase
 
   git checkout "$branch"
 
@@ -475,7 +533,7 @@ cmd_ff() {
 
   info "Merging $branch into $base..."
   git checkout "$base"
-  git merge "$branch" --no-ff -m "Merge branch '$branch' into $base"
+  run_merge "Merge of $branch into $base" merge "$branch" --no-ff -m "Merge branch '$branch' into $base"
 
   success "Feature $branch merged into $base."
 
@@ -510,6 +568,26 @@ cmd_cm() {
   git commit -m "$message"
 
   success "Committed: $message"
+}
+
+cmd_rc() {
+  # Check there is actually a commit to reset
+  if ! git rev-parse HEAD~1 >/dev/null 2>&1; then
+    die "No commits to reset."
+  fi
+
+  local msg
+  msg="$(git log -1 --pretty=%s)"
+
+  info "Resetting last commit: $msg"
+  git reset --mixed HEAD~1
+
+  # If tree is still clean, the commit was empty
+  if git diff --cached --quiet && git diff --quiet && [[ -z "$(git status --porcelain)" ]]; then
+    warn "Commit was empty — no changes to keep."
+  else
+    success "Last commit reset. Changes unstaged and in working tree."
+  fi
 }
 
 cmd_pf() {
@@ -547,6 +625,7 @@ cmd_dp() {
     force=true
   fi
 
+  require_clean_tree
   require_branch_config "DEVELOP_BRANCH" "DEVELOP_BRANCH"
 
   local current
@@ -556,14 +635,14 @@ cmd_dp() {
   fi
 
   info "Pulling latest $DEVELOP_BRANCH..."
-  git pull origin "$DEVELOP_BRANCH" --rebase
+  run_rebase "Pull --rebase of $DEVELOP_BRANCH" pull origin "$DEVELOP_BRANCH" --rebase
 
   info "Pulling latest $MAIN_BRANCH..."
   git checkout "$MAIN_BRANCH"
-  git pull origin "$MAIN_BRANCH" --rebase
+  run_rebase "Pull --rebase of $MAIN_BRANCH" pull origin "$MAIN_BRANCH" --rebase
 
   info "Rebasing $DEVELOP_BRANCH onto $MAIN_BRANCH..."
-  git rebase "$DEVELOP_BRANCH"
+  run_rebase "Rebase onto $DEVELOP_BRANCH" rebase "$DEVELOP_BRANCH"
 
   if [[ "$USE_TAGS" == "true" ]]; then
     local latest_tag current_release next_release tag
@@ -583,24 +662,35 @@ cmd_dp() {
     info "Previous tag: $latest_tag"
     info "New tag: $tag"
 
+    # Create the tag immediately before the push so a failed or declined push
+    # never leaves an orphaned local tag behind - the tag -d cleanup below
+    # removes it in every path that does not actually ship.
     git tag -a "$tag" -m "release $tag"
 
     success "Production deploy prepared. Tag $tag created."
 
     if [[ "$force" == true ]]; then
       info "Pushing to origin/$MAIN_BRANCH with tags..."
-      git push --follow-tags origin "$MAIN_BRANCH"
-      success "Here we go again, shipping to production. Hold onto your hats."
+      if git push --follow-tags origin "$MAIN_BRANCH"; then
+        success "Here we go again, shipping to production. Hold onto your hats."
+      else
+        git tag -d "$tag" >/dev/null
+        die "Push to origin/$MAIN_BRANCH failed - removed local tag $tag; nothing was shipped."
+      fi
     else
       echo ""
       read -r -p "Push to origin/$MAIN_BRANCH with tags? [y/N] " answer
       if [[ "$answer" == [yY] ]]; then
-        git push --follow-tags origin "$MAIN_BRANCH"
-        success "Here we go again, shipping to production. Hold onto your hats."
+        if git push --follow-tags origin "$MAIN_BRANCH"; then
+          success "Here we go again, shipping to production. Hold onto your hats."
+        else
+          git tag -d "$tag" >/dev/null
+          die "Push to origin/$MAIN_BRANCH failed - removed local tag $tag; nothing was shipped."
+        fi
       else
+        git tag -d "$tag" >/dev/null
         echo ""
-        info "Push with tags:"
-        echo "  git push --follow-tags"
+        info "Push declined - removed local tag $tag. Re-run 'gk dp' when ready to ship."
       fi
     fi
   else
@@ -641,31 +731,31 @@ cmd_ds() {
   base="$(base_branch)"
 
   info "Rebasing $branch against $base..."
-  git rebase "$base"
+  run_rebase "Rebase of $branch onto $base" rebase "$base"
 
   info "Pulling latest $STAGING_BRANCH..."
   git checkout "$STAGING_BRANCH"
-  git pull origin "$STAGING_BRANCH" --rebase
+  run_rebase "Pull --rebase of $STAGING_BRANCH" pull origin "$STAGING_BRANCH" --rebase
 
   info "Rebasing $STAGING_BRANCH onto $branch..."
-  git rebase "$branch"
+  run_rebase "Rebase of $STAGING_BRANCH onto $branch" rebase "$branch"
 
   success "Staging prepared with changes from $branch."
 
   if [[ "$force" == true ]]; then
     info "Force pushing to origin/$STAGING_BRANCH..."
-    git push --force origin "$STAGING_BRANCH"
+    git push --force-with-lease origin "$STAGING_BRANCH"
     success "Shipping to staging! Let's hope we don't take down the DB this time..."
   else
     echo ""
     read -r -p "Force push to origin/$STAGING_BRANCH? [y/N] " answer
     if [[ "$answer" == [yY] ]]; then
-      git push --force origin "$STAGING_BRANCH"
+      git push --force-with-lease origin "$STAGING_BRANCH"
       success "Shipping to staging! Let's hope we don't take down the DB this time..."
     else
       echo ""
       info "Force push staging:"
-      echo "  git push --force"
+      echo "  git push --force-with-lease"
     fi
   fi
 }
@@ -724,11 +814,11 @@ cmd_rf() {
 
   info "Pulling latest $base..."
   git checkout "$base"
-  git pull origin "$base" --rebase
+  run_rebase "Pull --rebase of $base" pull origin "$base" --rebase
 
   info "Rebasing $branch onto $base..."
   git checkout "$branch"
-  git rebase "$base"
+  run_rebase "Rebase of $branch onto $base" rebase "$base"
 
   success "Branch $branch is up to date with $base."
 }
@@ -887,6 +977,7 @@ copy_worktree_files() {
   saved_nullglob="$(shopt -p nullglob || true)"
   saved_dotglob="$(shopt -p dotglob || true)"
   shopt -s nullglob dotglob
+  # shellcheck disable=SC2064  # expand the saved shopt state now, at trap-set time, on purpose
   trap "eval $(printf '%q' "$saved_nullglob"); eval $(printf '%q' "$saved_dotglob"); trap - RETURN" RETURN
 
   local copied=0 pattern src rel dest matched _done=$'\n'
@@ -928,8 +1019,9 @@ cmd_wt() {
     ls)    cmd_wt_ls "$@" ;;
     co)    cmd_wt_co "$@" ;;
     rm)    cmd_wt_rm "$@" ;;
+    'rm!')  cmd_wt_rm --force "$@" ;;
     clean)  cmd_wt_clean "$@" ;;
-    clean!) cmd_wt_clean --force "$@" ;;
+    'clean!') cmd_wt_clean --force "$@" ;;
     help|--help|-h) cmd_wt_help ;;
     *)
       error "Unknown worktree command: $subcmd"
@@ -1101,6 +1193,12 @@ cmd_wt_co() {
 }
 
 cmd_wt_rm() {
+  local force=false
+  if [[ "${1:-}" == "--force" ]]; then
+    force=true
+    shift
+  fi
+
   local target="${1:-}"
   if [[ -z "$target" ]]; then
     die "Usage: gk wt rm <index|name>"
@@ -1118,14 +1216,40 @@ cmd_wt_rm() {
     rm_path="${WT_PATHS[$target]}"
     rm_branch="${WT_BRANCHES[$target]}"
   else
-    # Match by branch name (partial match)
+    # Match by worktree name (the basename after '--') or branch name. Prefer an
+    # exact match; only fall back to substring matching when nothing matches
+    # exactly, and refuse to guess when a substring is ambiguous.
+    local i wt_name
     for i in "${!WT_BRANCHES[@]}"; do
-      if [[ "${WT_BRANCHES[$i]}" == "$target" || "${WT_BRANCHES[$i]}" == *"$target"* ]]; then
+      wt_name="${WT_PATHS[$i]##*/}"   # basename of the worktree path
+      wt_name="${wt_name##*--}"       # name after the '--' separator
+      if [[ "$wt_name" == "$target" || "${WT_BRANCHES[$i]}" == "$target" ]]; then
         rm_path="${WT_PATHS[$i]}"
         rm_branch="${WT_BRANCHES[$i]}"
         break
       fi
     done
+
+    if [[ -z "$rm_path" ]]; then
+      local -a hits=()
+      for i in "${!WT_BRANCHES[@]}"; do
+        wt_name="${WT_PATHS[$i]##*/}"
+        wt_name="${wt_name##*--}"
+        if [[ "$wt_name" == *"$target"* || "${WT_BRANCHES[$i]}" == *"$target"* ]]; then
+          hits+=("$i")
+        fi
+      done
+      if [[ ${#hits[@]} -eq 1 ]]; then
+        rm_path="${WT_PATHS[${hits[0]}]}"
+        rm_branch="${WT_BRANCHES[${hits[0]}]}"
+      elif [[ ${#hits[@]} -gt 1 ]]; then
+        error "Multiple worktrees match '$target':"
+        for i in "${hits[@]}"; do
+          echo "  - ${WT_BRANCHES[$i]} (${WT_PATHS[$i]})" >&2
+        done
+        die "Be more specific - use an index from 'gk wt ls' or an exact name."
+      fi
+    fi
   fi
 
   if [[ -z "$rm_path" ]]; then
@@ -1139,6 +1263,21 @@ cmd_wt_rm() {
     die "Cannot remove the main worktree."
   fi
 
+  # Guard against silently discarding uncommitted work. Unless forced (wt rm!),
+  # confirm before nuking a worktree with a dirty tree.
+  if [[ "$force" != true ]]; then
+    local wt_status
+    wt_status="$(git -C "$rm_path" status --porcelain 2>/dev/null || echo "")"
+    if [[ -n "$wt_status" ]]; then
+      warn "Worktree at $rm_path has uncommitted changes that will be lost."
+      read -r -p "Remove anyway? [y/N] " confirm
+      if [[ "$confirm" != [yY] ]]; then
+        info "Aborted."
+        return
+      fi
+    fi
+  fi
+
   info "Removing worktree at $rm_path..."
   git worktree remove "$rm_path" --force
 
@@ -1146,7 +1285,7 @@ cmd_wt_rm() {
   local base
   base="$(base_branch)"
   if [[ "$rm_branch" != "(detached)" && "$rm_branch" != "???" ]]; then
-    if git branch --merged "$base" | grep -q "$rm_branch"; then
+    if git branch --merged "$base" --format='%(refname:short)' | grep -qxF "$rm_branch"; then
       git branch -d "$rm_branch" 2>/dev/null || true
       success "Worktree removed. Branch $rm_branch deleted (was merged)."
     else
@@ -1189,7 +1328,17 @@ cmd_wt_clean() {
     fi
 
     # Check if merged
-    if git branch --merged "$base" | grep -q "$wt_branch"; then
+    if git branch --merged "$base" --format='%(refname:short)' | grep -qxF "$wt_branch"; then
+      # In the non-force path, don't remove a worktree with uncommitted changes.
+      # 'gk wt clean!' (--force) removes merged worktrees regardless.
+      if [[ "$force" != true ]]; then
+        local wt_status
+        wt_status="$(git -C "$wt_path" status --porcelain 2>/dev/null || echo "")"
+        if [[ -n "$wt_status" ]]; then
+          warn "Skipping $wt_branch - worktree has uncommitted changes (use 'gk wt clean!' to force)."
+          continue
+        fi
+      fi
       clean_paths+=("$wt_path")
       clean_branches+=("$wt_branch")
     fi
@@ -1240,8 +1389,10 @@ ${BOLD}COMMANDS${NC}
   nb <name>          New worktree with plain branch
   ls                 List all worktrees with status
   co                 Checkout a worktree (interactive selector)
-  rm <index|name>    Remove a worktree by index or branch name
-  clean              Remove all worktrees with merged branches
+  rm <index|name>    Remove a worktree by index or branch name (prompts if dirty)
+  rm! <index|name>   Remove a worktree, skipping the dirty-tree prompt
+  clean              Remove merged worktrees (skips any with uncommitted changes)
+  clean!             Remove merged worktrees, including any with uncommitted changes
 
 ${BOLD}EXAMPLES${NC}
   gk wt nf login          Create worktree with feature/mj-login branch
@@ -1250,6 +1401,7 @@ ${BOLD}EXAMPLES${NC}
   gk wt co                 Checkout a worktree interactively
   gk wt rm 2               Remove worktree #2
   gk wt rm login           Remove worktree matching "login"
+  gk wt rm! login          Remove worktree "login" even if it has uncommitted changes
   gk wt clean              Clean up merged worktrees
 
 ${BOLD}CONFIG${NC}
@@ -1277,11 +1429,12 @@ ${BOLD}USAGE${NC}
 
 ${BOLD}COMMANDS${NC}
   nf <name>    New feature branch
-  ff           Finish current feature (merge into base branch, prompt to push)
-  ff!          Finish current feature (merge and push)
-  sf           Squash feature commits (rebase + squash, with prompt)
-  sf!          Squash feature commits (no prompt)
+  ff           Finish current feature (merge into base, print push hint)
+  ff!          Finish current feature (merge, push, delete branch)
+  sf           Squash feature commits into one (with prompt)
+  sf!          Squash feature commits into one (no prompt)
   cm <msg>     Add all changes and commit with message
+  rc           Reset last commit (keep changes unstaged in working tree)
   pf           Publish feature branch to remote
   pr <title>   Create a pull request (requires gh CLI)
   rf           Rebase feature branch against base branch
@@ -1293,6 +1446,7 @@ ${BOLD}COMMANDS${NC}
   init         Initialize JSONC config in current repo
   migrate      Migrate legacy .gitkiss (shell) to JSONC config
   shell-init   Print shell integration (eval "\$(gk shell-init)")
+  version      Print the installed version
 
 ${BOLD}CONFIG${NC} (JSONC, cascading - later overrides earlier)
   Global:   ~/.git-kiss.jsonc
@@ -1348,6 +1502,7 @@ main() {
     sf)       cmd_fs "$@" ;;
     'sf!')    cmd_fs --force "$@" ;;
     cm)       cmd_cm "$@" ;;
+    rc)       cmd_rc "$@" ;;
     pf)       cmd_pf "$@" ;;
     pr)       cmd_pr "$@" ;;
     dp)       cmd_dp "$@" ;;
