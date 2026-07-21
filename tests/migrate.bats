@@ -10,15 +10,9 @@ teardown() {
 }
 
 @test "gk migrate converts legacy repo .gitkiss into team + local + .bak" {
-  cat > "$REPO_DIR/.gitkiss" <<'EOF'
-MAIN_BRANCH=main
-DEVELOP_BRANCH=develop
-STAGING_BRANCH=staging
-FEATURE_PREFIX=feature/
-USE_TAGS=true
-INITIALS=mj
-WORKTREE_COPY=".env config/local"
-EOF
+  write_legacy_config "$REPO_DIR/.gitkiss" \
+    DEVELOP_BRANCH=develop STAGING_BRANCH=staging USE_TAGS=true INITIALS=mj \
+    WORKTREE_COPY=".env config/local"
   git add .gitkiss && git commit -m "legacy" >/dev/null 2>&1
   git push origin main >/dev/null 2>&1
 
@@ -42,7 +36,6 @@ EOF
 }
 
 @test "gk migrate global config writes ~/.git-kiss.jsonc" {
-  set_temp_home
   cat > "$HOME/.git-kiss" <<'EOF'
 FEATURE_PREFIX=glob/
 INITIALS=gg
@@ -59,14 +52,7 @@ EOF
 }
 
 @test "legacy .gitkiss is read in place when non-interactive (no migration)" {
-  cat > "$REPO_DIR/.gitkiss" <<'EOF'
-MAIN_BRANCH=main
-DEVELOP_BRANCH=
-STAGING_BRANCH=
-FEATURE_PREFIX=feat/
-USE_TAGS=false
-INITIALS=zz
-EOF
+  write_legacy_config "$REPO_DIR/.gitkiss" FEATURE_PREFIX=feat/ INITIALS=zz
   git add .gitkiss && git commit -m "legacy" >/dev/null 2>&1
   git push origin main >/dev/null 2>&1
 
@@ -78,7 +64,6 @@ EOF
 }
 
 @test "gk migrate with nothing to migrate is a no-op" {
-  set_temp_home
   rm -f "$REPO_DIR/.gitkiss"
   cat > "$REPO_DIR/.gitkiss.jsonc" <<'EOF'
 { "main_branch": "main", "develop_branch": "", "staging_branch": "",

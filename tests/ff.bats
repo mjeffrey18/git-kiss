@@ -25,6 +25,28 @@ teardown() {
   assert_output --partial "Merge branch 'feature/login' into main"
 }
 
+@test "gk ff! pushes the base and deletes the local and remote feature branch" {
+  create_feature_branch "login"
+  # Publish the feature branch so there is a remote branch to delete.
+  git push -u origin feature/login >/dev/null 2>&1
+
+  run bash "$GK" 'ff!'
+  assert_success
+  assert_output --partial "deleted"
+
+  # Base was pushed: the bare remote's main has the merge commit.
+  run git --git-dir="$REMOTE_DIR" log main --oneline
+  assert_output --partial "Merge branch 'feature/login' into main"
+
+  # Local feature branch was deleted.
+  run git branch --list feature/login
+  refute_output --partial "feature/login"
+
+  # Remote feature branch was deleted.
+  run git ls-remote --heads origin feature/login
+  refute_output --partial "feature/login"
+}
+
 @test "gk ff fails on dirty tree" {
   create_feature_branch "login"
   echo "dirty" > dirty.txt

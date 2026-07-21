@@ -17,16 +17,48 @@ teardown() {
   assert_output --partial "Not on a feature branch"
 }
 
+@test "gk ds! deploys the feature branch to staging" {
+  git checkout develop >/dev/null 2>&1
+  git checkout -b feature/staging-work >/dev/null 2>&1
+  echo "staging feature" > staging-feature.txt
+  git add -A && git commit -m "staging feature work" >/dev/null 2>&1
+
+  run bash "$GK" 'ds!'
+  assert_success
+  assert_output --partial "Shipping to staging"
+
+  # Local staging now contains the feature commit.
+  run git log staging --oneline
+  assert_output --partial "staging feature work"
+
+  # origin/staging (the bare remote) was force-pushed with the same commit.
+  run git --git-dir="$REMOTE_DIR" log staging --oneline
+  assert_output --partial "staging feature work"
+}
+
+@test "gk ds! reports recovery guidance on a rebase conflict" {
+  # Diverge the same line of the same file on develop and the feature branch.
+  git checkout develop >/dev/null 2>&1
+  echo "develop version" > conflict.txt
+  git add -A && git commit -m "develop change" >/dev/null 2>&1
+  git push origin develop >/dev/null 2>&1
+
+  # Branch from before the develop change, then change the same file differently.
+  git checkout -b feature/conflict develop~1 >/dev/null 2>&1
+  echo "feature version" > conflict.txt
+  git add -A && git commit -m "feature change" >/dev/null 2>&1
+
+  run bash "$GK" 'ds!'
+  assert_failure
+  assert_output --partial "git rebase --abort"
+
+  # Clean up the in-progress rebase so teardown can remove the repo cleanly.
+  git rebase --abort >/dev/null 2>&1 || true
+}
+
 @test "gk ds fails without staging branch configured" {
   # Switch to simple flow (no staging)
-  cat > "$REPO_DIR/.gitkiss" <<EOF
-MAIN_BRANCH=main
-DEVELOP_BRANCH=develop
-STAGING_BRANCH=
-FEATURE_PREFIX=feature/
-USE_TAGS=true
-INITIALS=
-EOF
+  write_legacy_config "$REPO_DIR/.gitkiss" DEVELOP_BRANCH=develop USE_TAGS=true
   git add .gitkiss && git commit -m "remove staging" >/dev/null 2>&1
 
   git checkout -b feature/test >/dev/null 2>&1
@@ -46,14 +78,7 @@ EOF
 }
 
 @test "gk dp fails without develop branch configured" {
-  cat > "$REPO_DIR/.gitkiss" <<EOF
-MAIN_BRANCH=main
-DEVELOP_BRANCH=
-STAGING_BRANCH=
-FEATURE_PREFIX=feature/
-USE_TAGS=false
-INITIALS=
-EOF
+  write_legacy_config "$REPO_DIR/.gitkiss"
   git add .gitkiss && git commit -m "simple flow" >/dev/null 2>&1
 
   run bash "$GK" dp

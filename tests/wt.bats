@@ -27,14 +27,7 @@ teardown() {
 }
 
 @test "gk wt nf applies initials" {
-  cat > "$REPO_DIR/.gitkiss" <<EOF
-MAIN_BRANCH=main
-DEVELOP_BRANCH=
-STAGING_BRANCH=
-FEATURE_PREFIX=feature/
-USE_TAGS=false
-INITIALS=mj
-EOF
+  write_legacy_config "$REPO_DIR/.gitkiss" INITIALS=mj
   git add .gitkiss && git commit -m "add initials" >/dev/null 2>&1
   git push origin main >/dev/null 2>&1
 
@@ -287,15 +280,7 @@ EOF
   echo "local_setting=true" > "$REPO_DIR/config/local/dev.conf"
 
   # Configure WORKTREE_COPY
-  cat > "$REPO_DIR/.gitkiss" <<EOF
-MAIN_BRANCH=main
-DEVELOP_BRANCH=
-STAGING_BRANCH=
-FEATURE_PREFIX=feature/
-USE_TAGS=false
-INITIALS=
-WORKTREE_COPY=".env config/local"
-EOF
+  write_legacy_config "$REPO_DIR/.gitkiss" WORKTREE_COPY=".env config/local"
   git add .gitkiss && git commit -m "add config" >/dev/null 2>&1
   git push origin main >/dev/null 2>&1
 
@@ -316,15 +301,7 @@ EOF
 }
 
 @test "gk wt nf skips missing WORKTREE_COPY entries" {
-  cat > "$REPO_DIR/.gitkiss" <<EOF
-MAIN_BRANCH=main
-DEVELOP_BRANCH=
-STAGING_BRANCH=
-FEATURE_PREFIX=feature/
-USE_TAGS=false
-INITIALS=
-WORKTREE_COPY=".env .nonexistent"
-EOF
+  write_legacy_config "$REPO_DIR/.gitkiss" WORKTREE_COPY=".env .nonexistent"
   echo "val=1" > "$REPO_DIR/.env"
   git add .gitkiss && git commit -m "add config" >/dev/null 2>&1
   git push origin main >/dev/null 2>&1

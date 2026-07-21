@@ -47,8 +47,7 @@ EOF
 }
 
 @test "local layer overrides team layer; team overrides global" {
-  set_temp_home   # isolates ~/.git-kiss.jsonc to a temp dir
-
+  # $HOME is already isolated to a temp dir by setup_test_repo.
   cat > "$HOME/.git-kiss.jsonc" <<'EOF'
 { "feature_prefix": "global/", "initials": "gg" }
 EOF

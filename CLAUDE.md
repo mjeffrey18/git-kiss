@@ -10,7 +10,7 @@ git-kiss (`gk`) is a single-file Bash CLI tool that wraps common git operations 
 - **Config**: JSONC parsed with `jq`, loaded from three cascading layers: `~/.git-kiss.jsonc` (global) -> `.gitkiss.jsonc` (committed team) -> `.gitkiss.local.jsonc` (gitignored personal); later overrides earlier
 - **Two flows**: "Full" (main/develop/staging with tags) and "Simple" (main/feature only)
 - **Worktrees**: `gk wt` subcommands manage git worktrees as sibling directories (`repo--name`). When a worktree is created, files are seeded into it by combining the `worktree_copy` config array with patterns from an optional `.worktreeinclude` file in the project root (`.gitignore`-style: one glob per line, `#` comments, blank lines ignored); the two sources are merged and deduplicated
-- **Version check**: Runs after every command, compares against GitHub, checks once per day via timestamp file stored next to the binary
+- **Version check**: Runs after every command, compares against GitHub, checks once per day via a timestamp file at `$HOME/.gk_version_check`. Set `GK_NO_VERSION_CHECK` to any non-empty value to disable it
 
 ## Key Conventions
 
@@ -36,6 +36,7 @@ When writing tests:
 - Config changes must be committed (and pushed if the command pulls from origin) to avoid dirty tree errors
 - Interactive commands (`read -r -p`) will hang in tests — use the `!` force variants
 - The `GK` variable points to `bin/gk` relative to the test directory
+- The shared setup exports `GK_NO_VERSION_CHECK=1` (and isolates `$HOME`) so the daily update check never runs or hits the network during tests
 
 ## File Structure
 

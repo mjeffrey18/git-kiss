@@ -4,28 +4,38 @@ setup() {
   load 'test_helper/setup'
   setup_test_repo
 
-  # Create a fake install directory for version check tests
-  export FAKE_INSTALL_DIR="$(mktemp -d)"
+  # These tests exercise the real version-check code path, so opt back in
+  # (setup_test_repo disables it via GK_NO_VERSION_CHECK=1 by default).
+  unset GK_NO_VERSION_CHECK
+
+  # Fake install directory so gk reads a known sibling .git-kiss-version.
+  # Lives in BATS_TEST_TMPDIR so bats cleans it up - no manual removal needed.
+  export FAKE_INSTALL_DIR="$BATS_TEST_TMPDIR/install"
+  mkdir -p "$FAKE_INSTALL_DIR"
   export FAKE_GK="$FAKE_INSTALL_DIR/gk"
   cp "$GK" "$FAKE_GK"
   cp "${BATS_TEST_DIRNAME}/../bin/.git-kiss-version" "$FAKE_INSTALL_DIR/.git-kiss-version"
   chmod +x "$FAKE_GK"
-  export PATH="$FAKE_INSTALL_DIR:$PATH"
 
-  # Override HOME so stamp file lands in a temp dir
-  export REAL_HOME="$HOME"
-  export HOME="$(mktemp -d)"
+  # Stub curl so the check never touches the network. It prints
+  # $GK_FAKE_REMOTE_VERSION (default a low version, so no update is reported).
+  export CURL_STUB_DIR="$BATS_TEST_TMPDIR/curl-stub"
+  mkdir -p "$CURL_STUB_DIR"
+  cat > "$CURL_STUB_DIR/curl" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "${GK_FAKE_REMOTE_VERSION:-0.0.0}"
+STUB
+  chmod +x "$CURL_STUB_DIR/curl"
+
+  # curl stub first, then the fake install dir, then the real PATH.
+  export PATH="$CURL_STUB_DIR:$FAKE_INSTALL_DIR:$PATH"
+
+  # HOME is already isolated to a temp dir by setup_test_repo, so the stamp
+  # file lands there and never pollutes the real home.
 }
 
 teardown() {
   teardown_test_repo
-  if [[ -n "${FAKE_INSTALL_DIR:-}" && -d "$FAKE_INSTALL_DIR" ]]; then
-    rm -rf "$FAKE_INSTALL_DIR"
-  fi
-  if [[ -n "${HOME:-}" && "$HOME" != "$REAL_HOME" && -d "$HOME" ]]; then
-    rm -rf "$HOME"
-  fi
-  export HOME="$REAL_HOME"
 }
 
 @test "gk reads version from .git-kiss-version file" {
@@ -77,8 +87,8 @@ teardown() {
   old_stamp=$(( $(date +%s) - 172800 ))
   echo "$old_stamp" > "$HOME/.gk_version_check"
 
-  # Run gk — this will try to hit the network
-  # We just verify it doesn't crash and updates the stamp
+  # Run gk — the network fetch is stubbed, so this exercises the check path
+  # without leaving the machine. We verify it doesn't crash and updates the stamp.
   run bash "$FAKE_GK" version
   assert_success
 
@@ -86,4 +96,55 @@ teardown() {
   new_stamp="$(cat "$HOME/.gk_version_check")"
   # Stamp should be updated to something newer than old_stamp
   [ "$new_stamp" -gt "$old_stamp" ]
+}
+
+@test "GK_NO_VERSION_CHECK=1 suppresses the check entirely (no stamp written)" {
+  rm -f "$HOME/.gk_version_check"
+
+  GK_NO_VERSION_CHECK=1 run bash "$FAKE_GK" version
+  assert_success
+
+  # The short-circuit returns before the stamp file is ever written.
+  [ ! -f "$HOME/.gk_version_check" ]
+  refute_output --partial "Update available"
+}
+
+# ─── semver comparison ───────────────────────────────────────────────────────
+# Drive the compare logic inside check_version via the curl stub. A fresh HOME
+# means no stamp file, so the check always triggers.
+
+# Usage: run_version_compare <local> <remote>
+run_version_compare() {
+  echo "$1" > "$FAKE_INSTALL_DIR/.git-kiss-version"
+  export GK_FAKE_REMOTE_VERSION="$2"
+  rm -f "$HOME/.gk_version_check"
+  run bash "$FAKE_GK" version
+}
+
+@test "version check reports an update only when the remote is newer" {
+  # Remote genuinely newer -> update available.
+  run_version_compare "1.2.3" "1.2.4"    # newer patch
+  assert_output --partial "Update available"
+  run_version_compare "1.2.3" "1.3.0"    # newer minor
+  assert_output --partial "Update available"
+  run_version_compare "1.2.3" "2.0.0"    # newer major
+  assert_output --partial "Update available"
+  run_version_compare "1.2.3" "1.3"      # fewer parts, but newer minor
+  assert_output --partial "Update available"
+  run_version_compare "1.2.3" "1.3.0.0"  # more parts, but newer minor
+  assert_output --partial "Update available"
+
+  # Remote equal or older -> no update message.
+  run_version_compare "1.2.3" "1.2.3"    # equal
+  refute_output --partial "Update available"
+  run_version_compare "1.2.3" "1.2.2"    # older patch
+  refute_output --partial "Update available"
+  run_version_compare "1.2.3" "1.1.9"    # older minor
+  refute_output --partial "Update available"
+  run_version_compare "1.2.3" "0.9.9"    # older major
+  refute_output --partial "Update available"
+  run_version_compare "1.2.3" "1.2"      # fewer parts, older (1.2.0 < 1.2.3)
+  refute_output --partial "Update available"
+  run_version_compare "1.2.3" "1.2.2.9"  # more parts, older patch
+  refute_output --partial "Update available"
 }
