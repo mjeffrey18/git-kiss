@@ -243,6 +243,38 @@ teardown() {
   [[ "$(cat "$err_file")" != *"Switch to [#]"* ]]
 }
 
+@test "gk wt co command substitution keeps a malformed project-store warning on stderr" {
+  bash "$GK" wt nb hotfix-db >/dev/null 2>&1
+
+  mkdir -p "$HOME/.gk"
+  printf '{ invalid\n' > "$HOME/.gk/projects.jsonc"
+
+  local wt_dir err_file
+  wt_dir="$(dirname "$REPO_DIR")/$(basename "$REPO_DIR")--hotfix-db"
+  err_file="$BATS_TEST_TMPDIR/stderr"
+
+  run bash -c 'result="$(bash "$1" wt co 1 2> "$2")"; status=$?; printf "%s" "$result"; exit "$status"' _ "$GK" "$err_file"
+  assert_success
+  assert_equal "$output" "$(cd "$wt_dir" && pwd -P)"
+  [[ "$(cat "$err_file")" == *"Ignoring malformed project store: $HOME/.gk/projects.jsonc"* ]]
+}
+
+@test "gk wt co command substitution keeps a non-object project-store warning on stderr" {
+  bash "$GK" wt nb hotfix-db >/dev/null 2>&1
+
+  mkdir -p "$HOME/.gk"
+  printf '[]\n' > "$HOME/.gk/projects.jsonc"
+
+  local wt_dir err_file
+  wt_dir="$(dirname "$REPO_DIR")/$(basename "$REPO_DIR")--hotfix-db"
+  err_file="$BATS_TEST_TMPDIR/stderr"
+
+  run bash -c 'result="$(bash "$1" wt co 1 2> "$2")"; status=$?; printf "%s" "$result"; exit "$status"' _ "$GK" "$err_file"
+  assert_success
+  assert_equal "$output" "$(cd "$wt_dir" && pwd -P)"
+  [[ "$(cat "$err_file")" == *"Ignoring malformed project store: $HOME/.gk/projects.jsonc"* ]]
+}
+
 @test "gk wt co with no other worktrees shows message" {
   run bash "$GK" wt co
   assert_success
@@ -291,10 +323,12 @@ teardown() {
 @test "gk wt co direct mode does not trigger onboarding" {
   rm "$REPO_DIR/.gitkiss"
 
-  run script -q /dev/null bash "$GK" wt co 0
+  run_in_pty bash "$GK" wt co 0
   assert_success
+  [[ "$output" != *"Set up git-kiss for this project?"* ]]
   [ ! -f "$REPO_DIR/.gitkiss.jsonc" ]
   [ ! -f "$REPO_DIR/.gitkiss.local.jsonc" ]
+  [ ! -e "$HOME/.gk/projects.jsonc" ]
 }
 
 @test "gk wt co rejects invalid direct indices without selector output" {

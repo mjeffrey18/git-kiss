@@ -132,7 +132,7 @@ apply_project_layer() {
   local stripped entry
   stripped="$(strip_jsonc_comments "$store")"
   if ! printf '%s' "$stripped" | jq -e 'type == "object"' >/dev/null 2>&1; then
-    warn "Ignoring malformed project store: $store"
+    warn "Ignoring malformed project store: $store" >&2
     return 0
   fi
   if ! printf '%s' "$stripped" | jq -e --arg key "$key" 'has($key)' >/dev/null 2>&1; then
@@ -140,11 +140,11 @@ apply_project_layer() {
   fi
   entry="$(printf '%s' "$stripped" | jq -c --arg key "$key" '.[$key]')"
   if ! printf '%s' "$entry" | jq -e 'type == "object"' >/dev/null 2>&1; then
-    warn "Ignoring malformed project entry for $key in $store"
+    warn "Ignoring malformed project entry for $key in $store" >&2
     return 0
   fi
   local tmp
-  tmp="$(mktemp "${TMPDIR:-/tmp}/gk-project.XXXXXX")" || { warn "Could not read project store: $store"; return 0; }
+  tmp="$(mktemp "${TMPDIR:-/tmp}/gk-project.XXXXXX")" || { warn "Could not read project store: $store" >&2; return 0; }
   printf '%s\n' "$entry" > "$tmp"
   apply_jsonc_layer "$tmp"
   rm -f "$tmp"

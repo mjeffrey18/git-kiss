@@ -133,6 +133,12 @@ set_temp_home() {
   mkdir -p "$HOME"
 }
 
+# Run a command under a pseudo-terminal, preserving each argument boundary.
+run_in_pty() {
+  command -v expect >/dev/null || skip "expect is required for TTY onboarding tests"
+  run expect -f "$BATS_TEST_DIRNAME/test_helper/run_in_pty.exp" -- "$@"
+}
+
 # Read a value from a JSONC file (strips full-line // comments first).
 jget() {
   grep -v '^[[:space:]]*//' "$1" | jq -r "$2"

@@ -1,0 +1,35 @@
+#!/usr/bin/expect -f
+
+# Run a command attached to a pseudo-terminal and return its exit status.
+set timeout 10
+
+if {[llength $argv] == 0} {
+  puts stderr "Usage: run_in_pty.exp command [argument ...]"
+  exit 2
+}
+
+spawn -noecho {*}$argv
+expect {
+  eof {
+    set wait_result [wait]
+    set wait_error [lindex $wait_result 2]
+    set wait_status [lindex $wait_result 3]
+
+    if {$wait_error != 0} {
+      puts stderr "Failed to wait for PTY command"
+      exit 1
+    }
+
+    if {[llength $wait_result] > 4 && [lindex $wait_result 4] eq "CHILDKILLED"} {
+      exit 1
+    }
+
+    exit $wait_status
+  }
+  timeout {
+    puts stderr "PTY command timed out after $timeout seconds"
+    catch {close}
+    catch {wait}
+    exit 124
+  }
+}
