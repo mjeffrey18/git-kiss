@@ -8,9 +8,8 @@ setup() {
   # (setup_test_repo disables it via GK_NO_VERSION_CHECK=1 by default).
   unset GK_NO_VERSION_CHECK
 
-  # Fake install directory so gk reads a known sibling .git-kiss-version.
-  # Lives in BATS_TEST_TMPDIR so bats cleans it up - no manual removal needed.
-  export FAKE_INSTALL_DIR="$BATS_TEST_TMPDIR/install"
+  # Create a fake install directory for version check tests
+  export FAKE_INSTALL_DIR="$BATS_TEST_TMPDIR/fake-install"
   mkdir -p "$FAKE_INSTALL_DIR"
   export FAKE_GK="$FAKE_INSTALL_DIR/gk"
   cp "$GK" "$FAKE_GK"
@@ -59,21 +58,22 @@ teardown() {
   bash "$FAKE_GK" version >/dev/null 2>&1 || true
 
   # Stamp file should exist in HOME
-  [ -f "$HOME/.gk_version_check" ]
+  [ -f "$HOME/.gk/version_check" ]
 }
 
 @test "version check stamp contains a unix timestamp" {
   bash "$FAKE_GK" version >/dev/null 2>&1 || true
 
   local stamp
-  stamp="$(cat "$HOME/.gk_version_check")"
+  stamp="$(cat "$HOME/.gk/version_check")"
   # Should be a number
   [[ "$stamp" =~ ^[0-9]+$ ]]
 }
 
 @test "version check does not re-check within 24 hours" {
   # Write a recent timestamp
-  date +%s > "$HOME/.gk_version_check"
+  mkdir -p "$HOME/.gk"
+  date +%s > "$HOME/.gk/version_check"
 
   run bash "$FAKE_GK" version
   assert_success
@@ -85,7 +85,8 @@ teardown() {
   # Write an old timestamp (2 days ago)
   local old_stamp
   old_stamp=$(( $(date +%s) - 172800 ))
-  echo "$old_stamp" > "$HOME/.gk_version_check"
+  mkdir -p "$HOME/.gk"
+  echo "$old_stamp" > "$HOME/.gk/version_check"
 
   # Run gk — the network fetch is stubbed, so this exercises the check path
   # without leaving the machine. We verify it doesn't crash and updates the stamp.
@@ -93,19 +94,17 @@ teardown() {
   assert_success
 
   local new_stamp
-  new_stamp="$(cat "$HOME/.gk_version_check")"
+  new_stamp="$(cat "$HOME/.gk/version_check")"
   # Stamp should be updated to something newer than old_stamp
   [ "$new_stamp" -gt "$old_stamp" ]
 }
 
 @test "GK_NO_VERSION_CHECK=1 suppresses the check entirely (no stamp written)" {
-  rm -f "$HOME/.gk_version_check"
-
   GK_NO_VERSION_CHECK=1 run bash "$FAKE_GK" version
   assert_success
 
   # The short-circuit returns before the stamp file is ever written.
-  [ ! -f "$HOME/.gk_version_check" ]
+  [ ! -f "$HOME/.gk/version_check" ]
   refute_output --partial "Update available"
 }
 
@@ -115,10 +114,11 @@ teardown() {
 
 # Usage: run_version_compare <local> <remote>
 run_version_compare() {
+  local version_home
   echo "$1" > "$FAKE_INSTALL_DIR/.git-kiss-version"
   export GK_FAKE_REMOTE_VERSION="$2"
-  rm -f "$HOME/.gk_version_check"
-  run bash "$FAKE_GK" version
+  version_home="$(mktemp -d "$BATS_TEST_TMPDIR/version-home.XXXXXX")"
+  run env HOME="$version_home" bash "$FAKE_GK" version
 }
 
 @test "version check reports an update only when the remote is newer" {
@@ -147,4 +147,21 @@ run_version_compare() {
   refute_output --partial "Update available"
   run_version_compare "1.2.3" "1.2.2.9"  # more parts, older patch
   refute_output --partial "Update available"
+}
+
+@test "version warning is written to stderr" {
+  echo "1.2.3" > "$FAKE_INSTALL_DIR/.git-kiss-version"
+  export GK_FAKE_REMOTE_VERSION="1.2.4"
+  local version_home stdout err_file
+  version_home="$(mktemp -d "$BATS_TEST_TMPDIR/version-home.XXXXXX")"
+  stdout="$BATS_TEST_TMPDIR/stdout"
+  err_file="$BATS_TEST_TMPDIR/stderr"
+
+  run bash -c 'env HOME="$1" bash "$2" version > "$3" 2> "$4"' _ \
+    "$version_home" "$FAKE_GK" "$stdout" "$err_file"
+  assert_success
+  assert_output ""
+  assert_equal "$(cat "$stdout")" "gk v1.2.3"
+  [[ "$(cat "$err_file")" == *"Update available"* ]]
+  [[ "$(cat "$err_file")" == *"Run: curl -fsSL"* ]]
 }

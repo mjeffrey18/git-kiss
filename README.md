@@ -20,7 +20,7 @@ curl -fsSL https://raw.githubusercontent.com/mjeffrey18/git-kiss/main/install.sh
 
 ```bash
 cd your-repo
-gk init              # create a JSONC config (choose full or simple flow)
+gk init              # interactively create global, project, shared, or local JSONC config
 gk nf <feature-name> # start a feature branch
 # ... make changes, commit ...
 gk pf                # publish branch to remote
@@ -44,8 +44,8 @@ gk ff                # finish feature (merge into base branch)
 | `gk ds` / `ds!`   | **Deploy staging** — rebase feature onto staging branch                 |
 | `gk dp` / `dp!`   | **Deploy production** — rebase develop into main and tag a release      |
 | `gk wt <cmd>`     | **Worktree** — manage git worktrees (see below)                         |
-| `gk init`         | **Init** — generate a `.gitkiss.jsonc` config file                      |
-| `gk migrate`      | **Migrate** — convert a legacy shell `.gitkiss` to JSONC config         |
+| `gk init`         | **Init** — interactively generate configuration in one selected scope   |
+| `gk migrate`      | **Migrate** — convert legacy shell configuration to JSONC                |
 | `gk shell-init`   | **Shell init** — print shell integration for `gk wt co`                 |
 | `gk version`      | **Version** — print the installed version (`--version` too)             |
 | `gk help`         | **Help** — show usage                                                   |
@@ -80,13 +80,14 @@ gk pr "Refactor auth" --body "Switched to JWT tokens"
 | `gk wt rm! <id>`  | Remove a worktree, skipping the dirty-tree prompt                        |
 | `gk wt clean`     | Remove merged worktrees (skips any with uncommitted changes)             |
 | `gk wt clean!`    | Remove merged worktrees, including any with uncommitted changes          |
-| `gk wt co`        | Interactively select a worktree (cds into it when shell-init is enabled) |
+| `gk wt co [index]`| Select a worktree interactively or by displayed index (cds with shell-init) |
 
 ```bash
 gk wt nf task1      # create worktree with feature/mj-task1 branch
 gk wt nb hotfix-db  # create worktree with hotfix-db branch
 gk wt ls            # list all worktrees (numbered)
 gk wt co            # interactively switch to a worktree (see below)
+gk wt co 2          # switch directly to displayed worktree index 2
 gk wt rm 2          # remove worktree #2
 gk wt rm task1      # remove worktree matching "task1"
 gk wt clean         # clean up merged worktrees
@@ -134,6 +135,13 @@ to your `~/.bashrc` or `~/.zshrc`:
 
 ```bash
 eval "$(gk shell-init)"
+```
+
+Pass a displayed zero-based index to switch without the selector, which is useful in
+shell scripts and when you already know the destination:
+
+```bash
+gk wt co 2
 ```
 
 Alternatively, you can add a manual alias if you prefer not to wrap `gk`:
@@ -249,16 +257,27 @@ The result is a clean, readable history:
 
 ## Configuration
 
-git-kiss reads JSONC config from up to three cascading layers. Each later layer
+git-kiss reads JSONC config from five cascading layers. Each later layer
 overrides keys set by earlier ones, so you only set what you want to change:
 
 | Location               | Scope                                  | Tracked    |
 | ---------------------- | -------------------------------------- | ---------- |
-| `~/.git-kiss.jsonc`    | global personal defaults for all repos | n/a        |
+| `~/.gk/.gitkiss.jsonc` | global personal defaults for all repos | n/a        |
 | `.gitkiss.jsonc`       | per-repo team config                   | commit it  |
+| `~/.gk/projects.jsonc` | per-project personal overrides          | n/a        |
 | `.gitkiss.local.jsonc` | per-repo personal overrides            | gitignored |
 
-Run `gk init` to generate config, or `gk migrate` to upgrade a pre-JSONC `.gitkiss`.
+Project-store entries are keyed by the canonical main-worktree path, so linked
+worktrees share settings. An empty `{}` entry acknowledges inherited settings
+without prompting again. Run `gk init` in a terminal to generate configuration,
+or `gk migrate` to upgrade legacy configuration.
+
+`~/.gk/projects.jsonc` is machine-managed: edit it only when git-kiss is not
+running, and do not commit or share it. The precedence order is built-in defaults,
+global configuration, shared repository configuration, the project-store entry,
+then local repository configuration. Legacy `~/.git-kiss.jsonc` is migrated to
+`~/.gk/.gitkiss.jsonc` on the next normal command when no destination collision
+exists; collisions leave the legacy file untouched.
 
 ```jsonc
 // .gitkiss.jsonc - committed team config
@@ -293,7 +312,7 @@ Run `gk init` to generate config, or `gk migrate` to upgrade a pre-JSONC `.gitki
 
 ## Updating
 
-`gk` checks GitHub for a newer release once a day and prints a one-line notice when an update is available - re-run the [curl installer](#install) to upgrade. The check runs after a command, never blocks it, and records the last-checked time in `~/.gk_version_check`.
+`gk` checks GitHub for a newer release once a day and prints a one-line notice when an update is available - re-run the [curl installer](#install) to upgrade. The check runs after a command, never blocks it, and records the last-checked time in `~/.gk/version_check`.
 
 Set the `GK_NO_VERSION_CHECK` environment variable to any non-empty value to disable the check entirely (handy for CI or air-gapped machines):
 

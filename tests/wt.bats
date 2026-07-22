@@ -215,14 +215,64 @@ teardown() {
 @test "gk wt co outputs selected worktree path" {
   bash "$GK" wt nb hotfix-db >/dev/null 2>&1
 
+  # A normal command may migrate global JSONC first, but that diagnostic must
+  # remain on stderr so shell integration receives only the selected path.
+  printf '{ "feature_prefix": "global/" }\n' > "$HOME/.git-kiss.jsonc"
+
   local wt_dir
   wt_dir="$(dirname "$REPO_DIR")/$(basename "$REPO_DIR")--hotfix-db"
 
   # Select index 1 (the new worktree) — capture stdout only
   local result
-  result="$(bash "$GK" wt co <<< "1" 2>/dev/null)"
+  result="$(GK_NO_VERSION_CHECK=1 bash "$GK" wt co <<< "1")"
   # Resolve symlinks for macOS /var -> /private/var
   [ "$(cd "$result" && pwd -P)" = "$(cd "$wt_dir" && pwd -P)" ]
+}
+
+@test "gk wt co selects a displayed index directly without reading stdin" {
+  bash "$GK" wt nb hotfix-db >/dev/null 2>&1
+
+  local wt_dir stdout err_file
+  wt_dir="$(dirname "$REPO_DIR")/$(basename "$REPO_DIR")--hotfix-db"
+  stdout="$BATS_TEST_TMPDIR/stdout"
+  err_file="$BATS_TEST_TMPDIR/stderr"
+
+  run bash -c 'bash "$1" wt co 1 <<< "0" > "$2" 2> "$3"' _ "$GK" "$stdout" "$err_file"
+  assert_success
+  [ "$(cd "$(cat "$stdout")" && pwd -P)" = "$(cd "$wt_dir" && pwd -P)" ]
+  [[ "$(cat "$err_file")" != *"Switch to [#]"* ]]
+}
+
+@test "gk wt co command substitution keeps a malformed project-store warning on stderr" {
+  bash "$GK" wt nb hotfix-db >/dev/null 2>&1
+
+  mkdir -p "$HOME/.gk"
+  printf '{ invalid\n' > "$HOME/.gk/projects.jsonc"
+
+  local wt_dir err_file
+  wt_dir="$(dirname "$REPO_DIR")/$(basename "$REPO_DIR")--hotfix-db"
+  err_file="$BATS_TEST_TMPDIR/stderr"
+
+  run bash -c 'result="$(bash "$1" wt co 1 2> "$2")"; status=$?; printf "%s" "$result"; exit "$status"' _ "$GK" "$err_file"
+  assert_success
+  assert_equal "$output" "$(cd "$wt_dir" && pwd -P)"
+  [[ "$(cat "$err_file")" == *"Ignoring malformed project store: $HOME/.gk/projects.jsonc"* ]]
+}
+
+@test "gk wt co command substitution keeps a non-object project-store warning on stderr" {
+  bash "$GK" wt nb hotfix-db >/dev/null 2>&1
+
+  mkdir -p "$HOME/.gk"
+  printf '[]\n' > "$HOME/.gk/projects.jsonc"
+
+  local wt_dir err_file
+  wt_dir="$(dirname "$REPO_DIR")/$(basename "$REPO_DIR")--hotfix-db"
+  err_file="$BATS_TEST_TMPDIR/stderr"
+
+  run bash -c 'result="$(bash "$1" wt co 1 2> "$2")"; status=$?; printf "%s" "$result"; exit "$status"' _ "$GK" "$err_file"
+  assert_success
+  assert_equal "$output" "$(cd "$wt_dir" && pwd -P)"
+  [[ "$(cat "$err_file")" == *"Ignoring malformed project store: $HOME/.gk/projects.jsonc"* ]]
 }
 
 @test "gk wt co with no other worktrees shows message" {
@@ -246,6 +296,76 @@ teardown() {
   run bash "$GK" wt co <<< "0"
   assert_success
   assert_output --partial "Already in that worktree"
+}
+
+@test "gk wt co directly selecting the current worktree writes no stdout" {
+  bash "$GK" wt nb hotfix-db >/dev/null 2>&1
+
+  local stdout err_file
+  stdout="$BATS_TEST_TMPDIR/stdout"
+  err_file="$BATS_TEST_TMPDIR/stderr"
+  run bash -c 'bash "$1" wt co 0 > "$2" 2> "$3"' _ "$GK" "$stdout" "$err_file"
+  assert_success
+  assert_equal "$(cat "$stdout")" ""
+  [[ "$(cat "$err_file")" == *"Already in that worktree."* ]]
+}
+
+@test "gk wt co directly selects current worktree when it is the only worktree" {
+  local stdout err_file
+  stdout="$BATS_TEST_TMPDIR/stdout"
+  err_file="$BATS_TEST_TMPDIR/stderr"
+  run bash -c 'bash "$1" wt co 0 > "$2" 2> "$3"' _ "$GK" "$stdout" "$err_file"
+  assert_success
+  assert_equal "$(cat "$stdout")" ""
+  [[ "$(cat "$err_file")" == *"Already in that worktree."* ]]
+}
+
+@test "gk wt co direct mode does not trigger onboarding" {
+  rm "$REPO_DIR/.gitkiss"
+
+  run_in_pty bash "$GK" wt co 0
+  assert_success
+  [[ "$output" != *"Set up git-kiss for this project?"* ]]
+  [ ! -f "$REPO_DIR/.gitkiss.jsonc" ]
+  [ ! -f "$REPO_DIR/.gitkiss.local.jsonc" ]
+  [ ! -e "$HOME/.gk/projects.jsonc" ]
+}
+
+@test "gk wt co rejects invalid direct indices without selector output" {
+  bash "$GK" wt nb hotfix-db >/dev/null 2>&1
+
+  local choice stdout err_file
+  for choice in 01 08 -1 1.0 999999999999999999999999999999999999999999; do
+    stdout="$BATS_TEST_TMPDIR/stdout-$choice"
+    err_file="$BATS_TEST_TMPDIR/stderr-$choice"
+    run bash -c 'bash "$1" wt co "$2" > "$3" 2> "$4"' _ "$GK" "$choice" "$stdout" "$err_file"
+    assert_failure
+    assert_equal "$(cat "$stdout")" ""
+    [[ "$(cat "$err_file")" == *"Invalid selection: $choice"* ]]
+  done
+}
+
+@test "gk wt co rejects surplus direct arguments" {
+  local stdout err_file
+  stdout="$BATS_TEST_TMPDIR/stdout"
+  err_file="$BATS_TEST_TMPDIR/stderr"
+  run bash -c 'bash "$1" wt co 0 1 > "$2" 2> "$3"' _ "$GK" "$stdout" "$err_file"
+  assert_failure
+  assert_equal "$(cat "$stdout")" ""
+  [[ "$(cat "$err_file")" == *"Usage: gk wt co [index]"* ]]
+}
+
+@test "gk wt co aborts safely on EOF" {
+  bash "$GK" wt nb hotfix-db >/dev/null 2>&1
+
+  local stdout err_file
+  stdout="$BATS_TEST_TMPDIR/stdout"
+  err_file="$BATS_TEST_TMPDIR/stderr"
+  run bash -c 'bash "$1" wt co </dev/null > "$2" 2> "$3"' _ "$GK" "$stdout" "$err_file"
+  assert_success
+  assert_equal "$(cat "$stdout")" ""
+  assert_output ""
+  [[ "$(cat "$err_file")" == *"Aborted."* ]]
 }
 
 # ─── wt nf/nb upstream tracking ───────────────────────────────────────────

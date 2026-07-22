@@ -27,41 +27,127 @@ USE_TAGS="$DEFAULT_USE_TAGS"
 INITIALS="$DEFAULT_INITIALS"
 WORKTREE_COPY=()
 
-load_config() {
-  local global_jsonc="$HOME/.git-kiss.jsonc"
-  local global_legacy="$HOME/.git-kiss"
+ensure_private_gk_dir() {
+  local gk_dir="$HOME/.gk"
+  if [[ -L "$gk_dir" ]] || ! mkdir -p "$gk_dir" || ! chmod 700 "$gk_dir"; then
+    warn "Could not safely prepare $gk_dir; continuing without managed global state." >&2
+    return 1
+  fi
+}
 
-  local repo_root
-  repo_root="$(git rev-parse --show-toplevel 2>/dev/null || echo "")"
+atomic_write_private() {
+  local target="$1" target_dir tmp
+  target_dir="$(dirname "$target")"
+  ensure_private_gk_dir || return 1
+  [[ "$target_dir" == "$HOME/.gk" ]] || return 1
+  tmp="$(mktemp "$target_dir/.gk-write.XXXXXX")" || return 1
+  chmod 600 "$tmp" || { rm -f "$tmp"; return 1; }
+  if ! cat > "$tmp" || ! mv "$tmp" "$target" || ! chmod 600 "$target"; then
+    rm -f "$tmp"
+    return 1
+  fi
+}
 
-  # Config root: in a worktree with no config of its own, fall back to main worktree.
-  local cfg_root="$repo_root"
-  if [[ -n "$repo_root" ]]; then
-    if [[ ! -f "$repo_root/.gitkiss.jsonc" && ! -f "$repo_root/.gitkiss.local.jsonc" && ! -f "$repo_root/.gitkiss" ]]; then
-      local common_dir main_root
-      common_dir="$(git rev-parse --git-common-dir 2>/dev/null || echo "")"
-      if [[ -n "$common_dir" ]]; then
-        main_root="$(cd "$common_dir" && cd .. && pwd -P)"
-        if [[ "$main_root" != "$(cd "$repo_root" && pwd -P)" ]]; then
-          cfg_root="$main_root"
-        fi
-      fi
+prepare_global_state() {
+  local gk_dir="$HOME/.gk" global="$HOME/.gk/.gitkiss.jsonc" legacy="$HOME/.git-kiss.jsonc"
+  ensure_private_gk_dir || return 1
+  if [[ -f "$legacy" ]]; then
+    if [[ -f "$global" ]]; then
+      warn "Global config migration skipped: $global already exists (legacy file preserved)." >&2
+    elif atomic_write_private "$global" < "$legacy" && rm -f "$legacy"; then
+      success "Migrated global config → $global" >&2
+    else
+      warn "Could not migrate legacy global config; continuing with existing settings." >&2
+      return 1
     fi
   fi
+}
+
+# Resolve the config root once for both configuration loading and onboarding.
+# A linked worktree inherits files from the main worktree when it has none itself.
+config_root() {
+  local repo_root main_root
+  repo_root="$(git rev-parse --show-toplevel 2>/dev/null || echo "")"
+  [[ -n "$repo_root" ]] || return 1
+  repo_root="$(cd "$repo_root" && pwd -P)"
+  if [[ -f "$repo_root/.gitkiss.jsonc" || -f "$repo_root/.gitkiss.local.jsonc" || -f "$repo_root/.gitkiss" ]]; then
+    printf '%s\n' "$repo_root"
+    return 0
+  fi
+  main_root="$(canonical_main_worktree_path)"
+  printf '%s\n' "${main_root:-$repo_root}"
+}
+
+load_config() {
+  local gk_dir="$HOME/.gk"
+  local global_jsonc="$gk_dir/.gitkiss.jsonc"
+  local legacy_global_jsonc="$HOME/.git-kiss.jsonc"
+  local projects_jsonc="$gk_dir/projects.jsonc"
+  local global_legacy="$HOME/.git-kiss"
+
+  local cfg_root
+  cfg_root="$(config_root 2>/dev/null || echo "")"
 
   # -- Global layer --
   maybe_migrate_or_source "$global_legacy" "$global_jsonc" "global"
-  apply_jsonc_layer "$global_jsonc"
+  if [[ -f "$global_jsonc" ]]; then
+    apply_jsonc_layer "$global_jsonc"
+  elif [[ -f "$legacy_global_jsonc" ]]; then
+    # Keep loading the legacy file if its secured migration could not complete.
+    apply_jsonc_layer "$legacy_global_jsonc"
+  fi
 
   # -- Repo team + personal layers --
   if [[ -n "$cfg_root" ]]; then
     maybe_migrate_or_source "$cfg_root/.gitkiss" "$cfg_root/.gitkiss.jsonc" "repo"
     apply_jsonc_layer "$cfg_root/.gitkiss.jsonc"
+    apply_project_layer "$projects_jsonc" "$(canonical_main_worktree_path)"
     apply_jsonc_layer "$cfg_root/.gitkiss.local.jsonc"
   fi
 
   normalize_worktree_copy
   debug "config: MAIN_BRANCH=$MAIN_BRANCH DEVELOP_BRANCH=${DEVELOP_BRANCH:-} STAGING_BRANCH=${STAGING_BRANCH:-} FEATURE_PREFIX=$FEATURE_PREFIX USE_TAGS=$USE_TAGS INITIALS=${INITIALS:-} WORKTREE_COPY=${WORKTREE_COPY[*]:-}"
+}
+
+canonical_main_worktree_path() {
+  local main
+  main="$(git worktree list --porcelain 2>/dev/null | sed -n 's/^worktree //p' | head -1)"
+  [[ -n "$main" ]] || main="$(git rev-parse --show-toplevel 2>/dev/null)"
+  (cd "$main" && pwd -P)
+}
+
+project_store_has_key() {
+  local store="$1" key="$2"
+  [[ -f "$store" ]] || return 1
+  require_command jq "$JSONC_HINT"
+  local stripped
+  stripped="$(strip_jsonc_comments "$store")"
+  printf '%s' "$stripped" | jq -e --arg key "$key" 'type == "object" and has($key) and (.[$key] | type == "object")' >/dev/null 2>&1
+}
+
+apply_project_layer() {
+  local store="$1" key="$2"
+  [[ -f "$store" ]] || return 0
+  require_command jq "$JSONC_HINT"
+  local stripped entry
+  stripped="$(strip_jsonc_comments "$store")"
+  if ! printf '%s' "$stripped" | jq -e 'type == "object"' >/dev/null 2>&1; then
+    warn "Ignoring malformed project store: $store" >&2
+    return 0
+  fi
+  if ! printf '%s' "$stripped" | jq -e --arg key "$key" 'has($key)' >/dev/null 2>&1; then
+    return 0
+  fi
+  entry="$(printf '%s' "$stripped" | jq -c --arg key "$key" '.[$key]')"
+  if ! printf '%s' "$entry" | jq -e 'type == "object"' >/dev/null 2>&1; then
+    warn "Ignoring malformed project entry for $key in $store" >&2
+    return 0
+  fi
+  local tmp
+  tmp="$(mktemp "${TMPDIR:-/tmp}/gk-project.XXXXXX")" || { warn "Could not read project store: $store" >&2; return 0; }
+  printf '%s\n' "$entry" > "$tmp"
+  apply_jsonc_layer "$tmp"
+  rm -f "$tmp"
 }
 
 # If a legacy shell config exists and no .jsonc counterpart does: prompt to migrate
@@ -159,7 +245,7 @@ EOF
 
 write_global_jsonc() {
   local out="$1"
-  cat > "$out" <<EOF
+  atomic_write_private "$out" <<EOF
 // git-kiss global config
 // Docs: https://github.com/${GITHUB_REPO}
 {
@@ -174,23 +260,44 @@ write_global_jsonc() {
 EOF
 }
 
+write_project_store_entry() {
+  local store="$1" key="$2" config="$3"
+  require_command jq "$JSONC_HINT"
+  ensure_private_gk_dir || die "Could not safely prepare $(dirname "$store")"
+  local existing='{}' tmp
+  if [[ -f "$store" ]]; then
+    existing="$(strip_jsonc_comments "$store")"
+    if ! printf '%s' "$existing" | jq -e 'type == "object"' >/dev/null 2>&1; then
+      die "Project store is malformed: $store"
+    fi
+  fi
+  tmp="$(mktemp "${TMPDIR:-/tmp}/gk-projects.XXXXXX")" || die "Could not update project store"
+  if ! printf '%s' "$existing" | jq --arg key "$key" --argjson config "$config" '.[$key] = $config' > "$tmp" || ! atomic_write_private "$store" < "$tmp"; then
+    rm -f "$tmp"
+    die "Could not safely update project store"
+  fi
+  rm -f "$tmp"
+}
+
 # Migrate one scope. Sources the legacy file inside a subshell so its variables
 # don't leak between scopes; file writes persist. On failure, removes any partial
 # output and leaves the legacy file untouched.
 migrate_scope() {
   local scope="$1" legacy="$2"
   if [[ "$scope" == "global" ]]; then
+    local destination="$HOME/.gk/.gitkiss.jsonc"
+    ensure_private_gk_dir || die "Could not safely prepare $(dirname "$destination")"
+    [[ ! -f "$destination" ]] || { warn "Migration skipped: $destination already exists (legacy file preserved)." >&2; return 0; }
     if ! (
       unset WORKTREE_COPY
       # shellcheck source=/dev/null
       source "$legacy"
-      write_global_jsonc "${legacy}.jsonc"
+      write_global_jsonc "$destination"
     ); then
-      rm -f "${legacy}.jsonc"
       die "Migration failed; left $legacy untouched."
     fi
     mv "$legacy" "${legacy}.bak"
-    echo -e "${GREEN}✓${NC} Migrated global config → ${legacy}.jsonc (backup: ${legacy}.bak)" >&2
+    echo -e "${GREEN}✓${NC} Migrated global config → $destination (backup: ${legacy}.bak)" >&2
   else
     local root
     root="$(dirname "$legacy")"
@@ -210,9 +317,31 @@ migrate_scope() {
   fi
 }
 
+migrate_global_jsonc() {
+  local legacy="$HOME/.git-kiss.jsonc" destination="$HOME/.gk/.gitkiss.jsonc"
+  [[ -f "$legacy" ]] || return 1
+  ensure_private_gk_dir || return 1
+  if [[ -f "$destination" ]]; then
+    warn "Migration skipped: $destination already exists (legacy file preserved)." >&2
+    return 0
+  fi
+  if ! atomic_write_private "$destination" < "$legacy"; then
+    warn "Could not migrate legacy global config; left $legacy untouched." >&2
+    return 1
+  fi
+  rm -f "$legacy"
+  success "Migrated global config → $destination" >&2
+}
+
 cmd_migrate() {
   local did=false
-  if [[ -f "$HOME/.git-kiss" && ! -f "$HOME/.git-kiss.jsonc" ]]; then
+  local gk_dir="$HOME/.gk"
+  local global="$gk_dir/.gitkiss.jsonc"
+  if [[ -f "$HOME/.git-kiss.jsonc" ]]; then
+    migrate_global_jsonc || die "Could not migrate legacy global config."
+    did=true
+  fi
+  if [[ -f "$HOME/.git-kiss" && ! -f "$global" ]]; then
     migrate_scope global "$HOME/.git-kiss"
     did=true
   fi
@@ -398,7 +527,14 @@ check_version() {
     return
   fi
 
-  local stamp_file="${HOME}/.gk_version_check"
+  prepare_global_state
+  local gk_dir="${HOME}/.gk"
+  local stamp_file="$gk_dir/version_check"
+  local legacy_stamp="${HOME}/.gk_version_check"
+  mkdir -p "$gk_dir" 2>/dev/null || return 0
+  if [[ -f "$legacy_stamp" && ! -f "$stamp_file" ]]; then
+    mv "$legacy_stamp" "$stamp_file" 2>/dev/null || true
+  fi
   debug "version check: local=$VERSION stamp=$stamp_file"
 
   # Only check once per day
@@ -463,7 +599,7 @@ check_version() {
     if [[ "$is_newer" == true ]]; then
       debug "version check: update available ($VERSION → $remote_version)"
       echo "" >&2
-      warn "Update available: ${BOLD}v${VERSION}${NC} → ${BOLD}v${remote_version}${NC}"
+      warn "Update available: ${BOLD}v${VERSION}${NC} → ${BOLD}v${remote_version}${NC}" >&2
       echo -e "   Run: curl -fsSL https://raw.githubusercontent.com/${GITHUB_REPO}/main/install.sh | bash" >&2
       echo "" >&2
     else
@@ -824,60 +960,89 @@ cmd_rf() {
 }
 
 cmd_init() {
+  [[ -t 0 && -t 1 ]] || die "gk init requires an interactive terminal."
+  local automatic="${1:-}"
   local repo_root
   repo_root="$(git rev-parse --show-toplevel 2>/dev/null || die "Not a git repository.")"
   local team="$repo_root/.gitkiss.jsonc"
   local localf="$repo_root/.gitkiss.local.jsonc"
 
-  if [[ -f "$team" || -f "$localf" ]]; then
-    warn "git-kiss config already exists (.gitkiss.jsonc and/or .gitkiss.local.jsonc)."
-    warn "Overwriting discards your current .gitkiss.local.jsonc (initials, worktree_copy)."
-    read -r -p "Overwrite? [y/N] " answer
-    if [[ "$answer" != [yY] ]]; then
-      info "Aborted."
+  local global="$HOME/.gk/.gitkiss.jsonc" projects="$HOME/.gk/projects.jsonc" key
+  key="$(canonical_main_worktree_path)"
+  if [[ "$automatic" == "--automatic" ]]; then
+    printf "Set up git-kiss for this project? [Y/n] "; read -r answer
+    if [[ "$answer" == [nN] ]]; then
+      write_project_store_entry "$projects" "$key" '{}'
+      info "Inherited settings acknowledged for this project."
       return
     fi
   fi
+  local detected_main detected_develop
+  detected_main="$(detect_main_branch)"
+  detected_develop="$(detect_develop_branch)"
+  echo -e "${BOLD}git-kiss setup${NC}"
+  printf "Main branch (default: %s): " "$detected_main"; read -r main_branch; main_branch="${main_branch:-$detected_main}"
+  printf "Develop branch (blank for simple flow) [%s]: " "$detected_develop"; read -r develop_branch; develop_branch="${develop_branch:-$detected_develop}"
+  printf "Staging branch (leave blank to skip): "; read -r staging_branch
+  printf "Feature prefix (default: feature/ if blank): "; read -r feature_prefix; feature_prefix="${feature_prefix:-feature/}"
+  printf "Use tags? [Y/n]: "; read -r answer; [[ "$answer" == [nN] ]] && use_tags=false || use_tags=true
+  printf "Your initials (leave blank to skip): "; read -r initials
+  printf "Worktree copy paths, space-separated []: "; read -r worktree_copy
+  local config
+  config="$(jq -nc --arg main "$main_branch" --arg develop "$develop_branch" --arg staging "$staging_branch" --arg prefix "$feature_prefix" --arg initials "$initials" --arg copy "$worktree_copy" --argjson tags "$use_tags" '{main_branch:$main, develop_branch:$develop, staging_branch:$staging, feature_prefix:$prefix, use_tags:$tags, initials:$initials, worktree_copy:($copy | if . == "" then [] else split(" ") end)}')"
+  echo "Choose where to store the config"
+  if [[ -f "$global" ]]; then
+    echo "1) Global project store"
+    echo "2) This repo (Git tracked)"
+    echo "3) This repo (local only)"
+    printf "Select [1-3]: "; read -r destination
+    case "$destination" in
+      1) project_store_has_key "$projects" "$key" && { printf "Overwrite project settings? [y/N] "; read -r answer; [[ "$answer" == [yY] ]] || { info "Aborted."; return; }; }; write_project_store_entry "$projects" "$key" "$config"; success "Config written to project store: $projects"; info "Project key: $key" ;;
+      2) [[ ! -f "$team" ]] || { printf "Overwrite shared config? [y/N] "; read -r answer; [[ "$answer" == [yY] ]] || { info "Aborted."; return; }; }; printf '// git-kiss shared repo config - commit this\n%s\n' "$config" > "$team"; success "Config written to $team" ;;
+      3) [[ ! -f "$localf" ]] || { printf "Overwrite local config? [y/N] "; read -r answer; [[ "$answer" == [yY] ]] || { info "Aborted."; return; }; }; printf '// git-kiss local repo config - gitignored\n%s\n' "$config" > "$localf"; ensure_gitignore "$repo_root" ".gitkiss.local.jsonc"; success "Config written to $localf" ;;
+      *) die "Invalid destination." ;;
+    esac
+  else
+    echo "1) Global"
+    echo "2) Global project store"
+    echo "3) This repo (Git tracked)"
+    echo "4) This repo (local only)"
+    printf "Select [1-4]: "; read -r destination
+    case "$destination" in
+      1) printf '// git-kiss global config\n%s\n' "$config" | atomic_write_private "$global" || die "Could not safely write global config"; success "Config written to $global" ;;
+      2) project_store_has_key "$projects" "$key" && { printf "Overwrite project settings? [y/N] "; read -r answer; [[ "$answer" == [yY] ]] || { info "Aborted."; return; }; }; write_project_store_entry "$projects" "$key" "$config"; success "Config written to project store: $projects"; info "Project key: $key" ;;
+      3) [[ ! -f "$team" ]] || { printf "Overwrite shared config? [y/N] "; read -r answer; [[ "$answer" == [yY] ]] || { info "Aborted."; return; }; }; printf '// git-kiss shared repo config - commit this\n%s\n' "$config" > "$team"; success "Config written to $team" ;;
+      4) [[ ! -f "$localf" ]] || { printf "Overwrite local config? [y/N] "; read -r answer; [[ "$answer" == [yY] ]] || { info "Aborted."; return; }; }; printf '// git-kiss local repo config - gitignored\n%s\n' "$config" > "$localf"; ensure_gitignore "$repo_root" ".gitkiss.local.jsonc"; success "Config written to $localf" ;;
+      *) die "Invalid destination." ;;
+    esac
+  fi
+}
 
-  echo ""
-  echo -e "${BOLD}Choose your git flow:${NC}"
-  echo ""
-  echo "  1) Full flow  (main → develop → feature/* with staging and release tags)"
-  echo "  2) Simple flow (main → feature/* with no develop branch)"
-  echo ""
-  read -r -p "Select [1/2]: " flow
+branch_ref_exists() {
+  local branch="$1"
+  git show-ref --verify --quiet "refs/heads/$branch" || git show-ref --verify --quiet "refs/remotes/origin/$branch"
+}
 
-  echo ""
-  read -r -p "Your initials (leave blank to skip): " initials
+detect_main_branch() {
+  if branch_ref_exists main; then echo "main"; elif branch_ref_exists master; then echo "master"; else echo "main"; fi
+}
 
-  local develop staging tags
-  case "$flow" in
-    2) develop="" staging="" tags="false" ;;
-    *) develop="develop" staging="staging" tags="true" ;;
+detect_develop_branch() {
+  if branch_ref_exists develop; then echo "develop"; elif branch_ref_exists dev; then echo "dev"; else echo "develop"; fi
+}
+
+needs_onboarding() {
+  local cmd="$1" subcmd="${2:-}" root store key
+  [[ -t 0 && -t 1 ]] || return 1
+  case "$cmd:$subcmd" in
+    nf:*|ff:*|ff!:*|sf:*|sf!:*|pf:*|pr:*|rf:*|ds:*|ds!:*|dp:*|dp!:*|wt:nf|wt:nb) ;;
+    *) return 1 ;;
   esac
-
-  cat > "$team" <<EOF
-// git-kiss team config - commit this
-// Docs: https://github.com/${GITHUB_REPO}
-{
-  "main_branch": "main",
-  "develop_branch": "${develop}",
-  "staging_branch": "${staging}",
-  "feature_prefix": "feature/",
-  "use_tags": ${tags}
-}
-EOF
-
-  cat > "$localf" <<EOF
-// git-kiss personal config - gitignored
-{
-  "initials": "${initials}",
-  "worktree_copy": []
-}
-EOF
-
-  ensure_gitignore "$repo_root" ".gitkiss.local.jsonc"
-  success "Config written: .gitkiss.jsonc (commit this) + .gitkiss.local.jsonc (gitignored)"
+  root="$(config_root)" || return 1
+  [[ ! -f "$root/.gitkiss.jsonc" && ! -f "$root/.gitkiss.local.jsonc" && ! -f "$root/.gitkiss" ]] || return 1
+  store="$HOME/.gk/projects.jsonc"; key="$(canonical_main_worktree_path)"
+  project_store_has_key "$store" "$key" && return 1
+  return 0
 }
 
 # ─── Worktree Commands ──────────────────────────────────────────────────────
@@ -1147,42 +1312,59 @@ cmd_wt_ls() {
 }
 
 cmd_wt_co() {
-  local current_wt
+  if [[ $# -gt 1 ]]; then
+    die "Usage: gk wt co [index]"
+  fi
+
+  local current_wt choice target i
   current_wt="$(git rev-parse --show-toplevel)"
 
   parse_worktrees
 
-  if [[ ${#WT_PATHS[@]} -le 1 ]]; then
+  if [[ $# -eq 1 ]]; then
+    choice="$1"
+  elif [[ ${#WT_PATHS[@]} -le 1 ]]; then
     info "No other worktrees to switch to." >&2
     return
-  fi
+  else
+    # Show numbered list (all UI on stderr so stdout stays clean for cd).
+    echo "" >&2
+    for i in "${!WT_PATHS[@]}"; do
+      local wt_path="${WT_PATHS[$i]}"
+      local wt_branch="${WT_BRANCHES[$i]}"
 
-  # Show numbered list (all UI on stderr so stdout stays clean for cd)
-  echo "" >&2
-  for i in "${!WT_PATHS[@]}"; do
-    local wt_path="${WT_PATHS[$i]}"
-    local wt_branch="${WT_BRANCHES[$i]}"
+      if [[ "$wt_path" == "$current_wt" ]]; then
+        printf "  ${GREEN}● %-4s${NC} %s\n" "$i" "$wt_branch" >&2
+      else
+        printf "    %-4s %s\n" "$i" "$wt_branch" >&2
+      fi
+    done
+    echo "" >&2
 
-    if [[ "$wt_path" == "$current_wt" ]]; then
-      printf "  ${GREEN}● %-4s${NC} %s\n" "$i" "$wt_branch" >&2
-    else
-      printf "    %-4s %s\n" "$i" "$wt_branch" >&2
+    echo -n "Switch to [#]: " >&2
+    if ! read -r choice || [[ -z "$choice" ]]; then
+      info "Aborted." >&2
+      return
     fi
-  done
-  echo "" >&2
-
-  echo -n "Switch to [#]: " >&2
-  read -r choice
-  if [[ -z "$choice" ]]; then
-    info "Aborted." >&2
-    return
   fi
 
-  if [[ ! "$choice" =~ ^[0-9]+$ ]] || [[ "$choice" -ge "${#WT_PATHS[@]}" ]]; then
+  # Validate canonical decimal spelling, then compare only with real array
+  # indices. This avoids arithmetic evaluation of user-controlled input.
+  if [[ ! "$choice" =~ ^(0|[1-9][0-9]*)$ ]]; then
     die "Invalid selection: $choice"
   fi
 
-  local target="${WT_PATHS[$choice]}"
+  target=""
+  for i in "${!WT_PATHS[@]}"; do
+    if [[ "$choice" == "$i" ]]; then
+      target="${WT_PATHS[$i]}"
+      break
+    fi
+  done
+  if [[ -z "$target" ]]; then
+    die "Invalid selection: $choice"
+  fi
+
   if [[ "$target" == "$current_wt" ]]; then
     info "Already in that worktree." >&2
     return
@@ -1388,7 +1570,7 @@ ${BOLD}COMMANDS${NC}
   nf <name>          New worktree with feature branch (uses prefix + initials)
   nb <name>          New worktree with plain branch
   ls                 List all worktrees with status
-  co                 Checkout a worktree (interactive selector)
+  co [index]         Checkout a worktree (interactive selector or displayed index)
   rm <index|name>    Remove a worktree by index or branch name (prompts if dirty)
   rm! <index|name>   Remove a worktree, skipping the dirty-tree prompt
   clean              Remove merged worktrees (skips any with uncommitted changes)
@@ -1398,7 +1580,7 @@ ${BOLD}EXAMPLES${NC}
   gk wt nf login          Create worktree with feature/mj-login branch
   gk wt nb hotfix-db       Create worktree with hotfix-db branch
   gk wt ls                 List worktrees (numbered)
-  gk wt co                 Checkout a worktree interactively
+  gk wt co [index]         Checkout a worktree interactively or by displayed index
   gk wt rm 2               Remove worktree #2
   gk wt rm login           Remove worktree matching "login"
   gk wt rm! login          Remove worktree "login" even if it has uncommitted changes
@@ -1449,8 +1631,9 @@ ${BOLD}COMMANDS${NC}
   version      Print the installed version
 
 ${BOLD}CONFIG${NC} (JSONC, cascading - later overrides earlier)
-  Global:   ~/.git-kiss.jsonc
+  Global:   ~/.gk/.gitkiss.jsonc
   Team:     .gitkiss.jsonc        (commit this)
+  Project:  ~/.gk/projects.jsonc
   Personal: .gitkiss.local.jsonc  (gitignored)
 
   Run ${BOLD}gk init${NC} to generate config, or ${BOLD}gk migrate${NC} to upgrade an old one.
@@ -1467,7 +1650,7 @@ cmd_shell_init() {
 gk() {
   if [ "${1:-}" = "wt" ] && [ "${2:-}" = "co" ]; then
     local _gk_dir
-    _gk_dir="$(command gk "$@")" || return 0
+    _gk_dir="$(command gk "$@")" || return $?
     if [ -n "$_gk_dir" ]; then
       cd "$_gk_dir"
     fi
@@ -1488,12 +1671,27 @@ main() {
     exit 0
   fi
 
-  require_git_repo
-  load_config
-
   local cmd="${1:-help}"
   shift || true
   debug "command: gk $cmd $*"
+
+  require_git_repo
+
+  # An explicit migration must decide what to migrate before normal command
+  # preparation has a chance to perform an automatic migration.
+  if [[ "$cmd" == "migrate" ]]; then
+    cmd_migrate "$@"
+    return
+  fi
+
+  prepare_global_state || true
+  load_config
+
+  if needs_onboarding "$cmd" "${1:-}"; then
+    warn "No git-kiss configuration found for this project."
+    cmd_init --automatic
+    load_config
+  fi
 
   case "$cmd" in
     nf)       cmd_nf "$@" ;;
@@ -1512,7 +1710,6 @@ main() {
     rf)       cmd_rf "$@" ;;
     wt)       cmd_wt "$@" ;;
     init)     cmd_init "$@" ;;
-    migrate)  cmd_migrate "$@" ;;
     help|--help|-h)    cmd_help ;;
     version|--version) cmd_version ;;
     *)

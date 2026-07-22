@@ -32,7 +32,7 @@ jobs:
 
       - name: Install jq and bats (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y jq bats
+        run: sudo apt-get update && sudo apt-get install -y expect jq bats
 
       - name: Install jq and bats (macOS)
         if: runner.os == 'macOS'

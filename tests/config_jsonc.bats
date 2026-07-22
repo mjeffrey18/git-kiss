@@ -47,8 +47,8 @@ EOF
 }
 
 @test "local layer overrides team layer; team overrides global" {
-  # $HOME is already isolated to a temp dir by setup_test_repo.
-  cat > "$HOME/.git-kiss.jsonc" <<'EOF'
+  mkdir -p "$HOME/.gk"
+  cat > "$HOME/.gk/.gitkiss.jsonc" <<'EOF'
 { "feature_prefix": "global/", "initials": "gg" }
 EOF
   cat > "$REPO_DIR/.gitkiss.jsonc" <<'EOF'
@@ -67,6 +67,76 @@ EOF
   assert_output "local/mj-thing"   # local prefix + local initials win
 }
 
+@test "project store is applied between shared and local configuration" {
+  set_temp_home
+  mkdir -p "$HOME/.gk"
+  local key
+  key="$(cd "$REPO_DIR" && pwd -P)"
+  jq -n --arg key "$key" '{($key): {feature_prefix: "project/", initials: "ps"}}' > "$HOME/.gk/projects.jsonc"
+  cat > "$REPO_DIR/.gitkiss.jsonc" <<'EOF'
+{ "main_branch": "main", "develop_branch": "", "staging_branch": "", "feature_prefix": "team/", "use_tags": false }
+EOF
+  cat > "$REPO_DIR/.gitkiss.local.jsonc" <<'EOF'
+{ "initials": "local" }
+EOF
+  git add -A && git commit -m "project store layer" >/dev/null 2>&1
+  git push origin main >/dev/null 2>&1
+
+  run bash "$GK" nf thing
+  assert_success
+  run git branch --show-current
+  assert_output "project/local-thing"
+}
+
+@test "malformed project store is ignored with a warning" {
+  set_temp_home
+  mkdir -p "$HOME/.gk"
+  printf '{ invalid\n' > "$HOME/.gk/projects.jsonc"
+
+  run bash "$GK" version
+  assert_success
+  assert_output --partial "malformed project store"
+}
+
+@test "linked worktrees share the canonical project-store key" {
+  set_temp_home
+  mkdir -p "$HOME/.gk"
+  local key wt_dir
+  key="$(cd "$REPO_DIR" && pwd -P)"
+  wt_dir="$BATS_TEST_TMPDIR/repo--linked"
+  jq -n --arg key "$key" '{($key): {feature_prefix: "linked/"}}' > "$HOME/.gk/projects.jsonc"
+  git worktree add "$wt_dir" -b linked-test main >/dev/null 2>&1
+
+  GK_DEBUG=1 run bash -c 'cd "$1" && bash "$2" version' _ "$wt_dir" "$GK"
+  assert_success
+  assert_output --partial "FEATURE_PREFIX=linked/"
+}
+
+@test "scalar, array and null project entries are ignored" {
+  set_temp_home
+  mkdir -p "$HOME/.gk"
+  local key
+  key="$(cd "$REPO_DIR" && pwd -P)"
+
+  for entry in '"bad"' '[]' 'null'; do
+    jq -n --arg key "$key" --argjson entry "$entry" '{($key): $entry}' > "$HOME/.gk/projects.jsonc"
+    GK_DEBUG=1 run bash "$GK" version
+    assert_success
+    assert_output --partial "Ignoring malformed project entry"
+    refute_output --partial "FEATURE_PREFIX=bad"
+  done
+}
+
+@test "a non-object project store is ignored" {
+  set_temp_home
+  mkdir -p "$HOME/.gk"
+  printf '[]\n' > "$HOME/.gk/projects.jsonc"
+
+  run bash "$GK" version
+  assert_success
+  assert_output --partial "Ignoring malformed project store: $HOME/.gk/projects.jsonc"
+}
+
 @test "malformed .gitkiss.jsonc is ignored with a warning, not a crash" {
   cat > "$REPO_DIR/.gitkiss.jsonc" <<'EOF'
 { "main_branch": "main", "feature_prefix": "feature/",  // inline comment breaks jq
@@ -79,39 +149,8 @@ EOF
   assert_output --partial "malformed config"
 }
 
-@test "gk init (simple flow) writes JSONC team + local and gitignores local" {
-  # gk init doesn't require a clean tree, so we don't commit after removing .gitkiss.
-  rm -f "$REPO_DIR/.gitkiss"
-  printf '2\nmj\n' | bash "$GK" init >/dev/null 2>&1
-
-  [ -f "$REPO_DIR/.gitkiss.jsonc" ]
-  [ -f "$REPO_DIR/.gitkiss.local.jsonc" ]
-  assert_equal "$(jget "$REPO_DIR/.gitkiss.jsonc" .develop_branch)" ""
-  assert_equal "$(jget "$REPO_DIR/.gitkiss.jsonc" .use_tags)" "false"
-  assert_equal "$(jget "$REPO_DIR/.gitkiss.local.jsonc" .initials)" "mj"
-
-  run grep -qxF ".gitkiss.local.jsonc" "$REPO_DIR/.gitignore"
-  assert_success
-}
-
-@test "gk init (full flow) sets develop, staging, tags" {
-  rm -f "$REPO_DIR/.gitkiss"
-  printf '1\nab\n' | bash "$GK" init >/dev/null 2>&1
-
-  assert_equal "$(jget "$REPO_DIR/.gitkiss.jsonc" .develop_branch)" "develop"
-  assert_equal "$(jget "$REPO_DIR/.gitkiss.jsonc" .staging_branch)" "staging"
-  assert_equal "$(jget "$REPO_DIR/.gitkiss.jsonc" .use_tags)" "true"
-  assert_equal "$(jget "$REPO_DIR/.gitkiss.local.jsonc" .initials)" "ab"
-}
-
-@test "gk init does not silently overwrite an existing .gitkiss.local.jsonc" {
-  rm -f "$REPO_DIR/.gitkiss"
-  printf '2\nmj\n' | bash "$GK" init >/dev/null 2>&1
-
-  # User customises their personal file.
-  printf '{ "initials": "mj", "worktree_copy": [".env"] }\n' > "$REPO_DIR/.gitkiss.local.jsonc"
-
-  # Re-running init and declining the overwrite must preserve the customisation.
-  printf 'n\n' | bash "$GK" init >/dev/null 2>&1
-  assert_equal "$(jget "$REPO_DIR/.gitkiss.local.jsonc" '.worktree_copy[0]')" ".env"
+@test "gk init refuses non-interactive use" {
+  run bash "$GK" init
+  assert_failure
+  assert_output --partial "interactive terminal"
 }
