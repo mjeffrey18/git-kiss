@@ -16,8 +16,9 @@ teardown() {
   git add .gitkiss && git commit -m "legacy" >/dev/null 2>&1
   git push origin main >/dev/null 2>&1
 
-  run bash "$GK" migrate
+  run bash -c 'bash "$1" migrate > "$2"' _ "$GK" "$BATS_TEST_TMPDIR/migrate.stdout"
   assert_success
+  assert_equal "$(cat "$BATS_TEST_TMPDIR/migrate.stdout")" ""
 
   [ -f "$REPO_DIR/.gitkiss.jsonc" ]
   [ -f "$REPO_DIR/.gitkiss.local.jsonc" ]
@@ -35,20 +36,88 @@ teardown() {
   assert_success
 }
 
-@test "gk migrate global config writes ~/.git-kiss.jsonc" {
+@test "gk migrate global config writes ~/.gk/.gitkiss.jsonc" {
   cat > "$HOME/.git-kiss" <<'EOF'
 FEATURE_PREFIX=glob/
 INITIALS=gg
 USE_TAGS=false
 WORKTREE_COPY=""
 EOF
+  run bash -c 'bash "$1" migrate > "$2"' _ "$GK" "$BATS_TEST_TMPDIR/migrate.stdout"
+  assert_success
+  assert_equal "$(cat "$BATS_TEST_TMPDIR/migrate.stdout")" ""
+  [ -f "$HOME/.gk/.gitkiss.jsonc" ]
+  [ -f "$HOME/.git-kiss.bak" ]
+  [ ! -f "$HOME/.git-kiss" ]
+  assert_equal "$(jget "$HOME/.gk/.gitkiss.jsonc" .feature_prefix)" "glob/"
+  assert_equal "$(jget "$HOME/.gk/.gitkiss.jsonc" .initials)" "gg"
+}
+
+@test "gk migrate keeps a legacy global JSONC file when the destination collides" {
+  set_temp_home
+  mkdir -p "$HOME/.gk"
+  printf '{ "feature_prefix": "existing/" }\n' > "$HOME/.gk/.gitkiss.jsonc"
+  printf '{ "feature_prefix": "legacy/" }\n' > "$HOME/.git-kiss.jsonc"
+
+  run bash -c 'bash "$1" migrate > "$2"' _ "$GK" "$BATS_TEST_TMPDIR/migrate.stdout"
+  assert_success
+  assert_equal "$(cat "$BATS_TEST_TMPDIR/migrate.stdout")" ""
+  [ -f "$HOME/.git-kiss.jsonc" ]
+  assert_equal "$(jget "$HOME/.gk/.gitkiss.jsonc" .feature_prefix)" "existing/"
+}
+
+@test "gk migrate leaves a legacy global JSONC file intact when secure preparation fails" {
+  set_temp_home
+  printf '{ "feature_prefix": "legacy/" }\n' > "$HOME/.git-kiss.jsonc"
+  ln -s "$BATS_TEST_TMPDIR/missing-gk-directory" "$HOME/.gk"
+
+  run bash -c 'bash "$1" migrate > "$2"' _ "$GK" "$BATS_TEST_TMPDIR/migrate.stdout"
+  assert_failure
+  assert_equal "$(cat "$BATS_TEST_TMPDIR/migrate.stdout")" ""
+  [ -f "$HOME/.git-kiss.jsonc" ]
+}
+
+@test "ordinary commands keep loading legacy global JSONC when secure preparation fails" {
+  set_temp_home
+  rm -f "$REPO_DIR/.gitkiss"
+  printf '{ "feature_prefix": "legacy/" }\n' > "$HOME/.git-kiss.jsonc"
+  ln -s "$BATS_TEST_TMPDIR/missing-gk-directory" "$HOME/.gk"
+
+  GK_DEBUG=1 run bash "$GK" version
+  assert_success
+  assert_output --partial "FEATURE_PREFIX=legacy/"
+  [ -f "$HOME/.git-kiss.jsonc" ]
+}
+
+@test "gk migrate moves legacy global JSONC without overwriting a new config" {
+  set_temp_home
+  printf '{ "feature_prefix": "legacy/" }\n' > "$HOME/.git-kiss.jsonc"
+  run bash "$GK" migrate
+  assert_success
+  [ -f "$HOME/.gk/.gitkiss.jsonc" ]
+  [ ! -f "$HOME/.git-kiss.jsonc" ]
+  assert_equal "$(jget "$HOME/.gk/.gitkiss.jsonc" .feature_prefix)" "legacy/"
+
+  printf '{ "feature_prefix": "old/" }\n' > "$HOME/.git-kiss.jsonc"
   run bash "$GK" migrate
   assert_success
   [ -f "$HOME/.git-kiss.jsonc" ]
-  [ -f "$HOME/.git-kiss.bak" ]
-  [ ! -f "$HOME/.git-kiss" ]
-  assert_equal "$(jget "$HOME/.git-kiss.jsonc" .feature_prefix)" "glob/"
-  assert_equal "$(jget "$HOME/.git-kiss.jsonc" .initials)" "gg"
+  assert_equal "$(jget "$HOME/.gk/.gitkiss.jsonc" .feature_prefix)" "legacy/"
+}
+
+@test "ordinary command migrates legacy global JSONC and preserves a collision" {
+  set_temp_home
+  printf '{ "feature_prefix": "ordinary/" }\n' > "$HOME/.git-kiss.jsonc"
+  run bash "$GK" version
+  assert_success
+  [ -f "$HOME/.gk/.gitkiss.jsonc" ]
+  [ ! -f "$HOME/.git-kiss.jsonc" ]
+
+  printf '{ "feature_prefix": "collision/" }\n' > "$HOME/.git-kiss.jsonc"
+  run bash "$GK" version
+  assert_success
+  [ -f "$HOME/.git-kiss.jsonc" ]
+  assert_output --partial "migration skipped"
 }
 
 @test "legacy .gitkiss is read in place when non-interactive (no migration)" {

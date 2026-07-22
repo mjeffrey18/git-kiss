@@ -10,13 +10,10 @@ GK="${BATS_TEST_DIRNAME}/../bin/gk"
 
 # Create a fresh git repo with a remote (bare) for each test
 setup_test_repo() {
-  # Isolate $HOME so no test reads/writes the real global config or version stamp.
-  set_temp_home
-  # Never let the version check stamp a file or hit the network during tests.
+  # Never let ordinary tests stamp a file or hit the network.
   export GK_NO_VERSION_CHECK=1
 
-  # All test dirs live inside BATS_TEST_TMPDIR so bats owns their deletion -
-  # teardown never has to run a destructive command itself.
+  set_temp_home
 
   # Create a bare "remote" repo
   export REMOTE_DIR="$BATS_TEST_TMPDIR/remote"
@@ -73,8 +70,7 @@ setup_full_flow_repo() {
 
 # Restore the environment after each test. All temp dirs (temp home, repo,
 # remote, worktree siblings) live inside BATS_TEST_TMPDIR, which bats deletes
-# itself after the test - nothing in this suite may ever delete $HOME or run
-# its own recursive removal.
+# itself after the test.
 teardown_test_repo() {
   if [[ -n "${ORIG_HOME:-}" ]]; then
     export HOME="$ORIG_HOME"
@@ -90,16 +86,6 @@ create_feature_branch() {
   echo "feature work" > "feature-$name.txt"
   git add -A >/dev/null 2>&1
   git commit -m "add $name" >/dev/null 2>&1
-}
-
-# Point HOME at a throwaway dir so global config / version stamp don't touch
-# real $HOME. The dir lives inside BATS_TEST_TMPDIR so bats deletes it - the
-# suite itself never removes $HOME, only restores it in teardown_test_repo.
-set_temp_home() {
-  : "${BATS_TEST_TMPDIR:?set_temp_home requires bats (BATS_TEST_TMPDIR unset)}"
-  export ORIG_HOME="${ORIG_HOME:-$HOME}"
-  export HOME="$BATS_TEST_TMPDIR/home"
-  mkdir -p "$HOME"
 }
 
 # Write a legacy shell-format .gitkiss config to $1. Remaining args are KEY=VALUE
@@ -135,6 +121,16 @@ write_legacy_config() {
       echo "WORKTREE_COPY=\"$WORKTREE_COPY\""
     fi
   } > "$path"
+}
+
+# Point HOME at a throwaway dir so global config / version stamps don't touch
+# real $HOME. The dir lives inside BATS_TEST_TMPDIR so bats deletes it - the
+# suite itself only restores $HOME in teardown_test_repo.
+set_temp_home() {
+  : "${BATS_TEST_TMPDIR:?set_temp_home requires bats (BATS_TEST_TMPDIR unset)}"
+  export ORIG_HOME="${ORIG_HOME:-$HOME}"
+  export HOME="$BATS_TEST_TMPDIR/home"
+  mkdir -p "$HOME"
 }
 
 # Read a value from a JSONC file (strips full-line // comments first).
