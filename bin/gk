@@ -26,6 +26,13 @@ FEATURE_PREFIX="$DEFAULT_FEATURE_PREFIX"
 USE_TAGS="$DEFAULT_USE_TAGS"
 INITIALS="$DEFAULT_INITIALS"
 WORKTREE_COPY=()
+MAIN_BRANCH_SOURCE="built-in defaults"
+DEVELOP_BRANCH_SOURCE="built-in defaults"
+STAGING_BRANCH_SOURCE="built-in defaults"
+FEATURE_PREFIX_SOURCE="built-in defaults"
+USE_TAGS_SOURCE="built-in defaults"
+INITIALS_SOURCE="built-in defaults"
+WORKTREE_COPY_SOURCE="built-in defaults"
 
 ensure_private_gk_dir() {
   local gk_dir="$HOME/.gk"
@@ -85,28 +92,63 @@ load_config() {
   local projects_jsonc="$gk_dir/projects.jsonc"
   local global_legacy="$HOME/.git-kiss"
 
-  local cfg_root
+  local cfg_root main_root repo_root
   cfg_root="$(config_root 2>/dev/null || echo "")"
+  repo_root="$(git rev-parse --show-toplevel 2>/dev/null || echo "")"
+  main_root="$(canonical_main_worktree_path 2>/dev/null || echo "")"
+
+  # Reset so a post-onboarding reload cannot retain values from a prior pass.
+  MAIN_BRANCH="$DEFAULT_MAIN_BRANCH"; DEVELOP_BRANCH="$DEFAULT_DEVELOP_BRANCH"
+  STAGING_BRANCH="$DEFAULT_STAGING_BRANCH"; FEATURE_PREFIX="$DEFAULT_FEATURE_PREFIX"
+  USE_TAGS="$DEFAULT_USE_TAGS"; INITIALS="$DEFAULT_INITIALS"; WORKTREE_COPY=()
+  MAIN_BRANCH_SOURCE="built-in defaults"; DEVELOP_BRANCH_SOURCE="built-in defaults"
+  STAGING_BRANCH_SOURCE="built-in defaults"; FEATURE_PREFIX_SOURCE="built-in defaults"
+  USE_TAGS_SOURCE="built-in defaults"; INITIALS_SOURCE="built-in defaults"
+  WORKTREE_COPY_SOURCE="built-in defaults"
 
   # -- Global layer --
+  debug "config layer global: $([[ -f "$global_jsonc" ]] && echo found || echo missing) ($global_jsonc)"
   maybe_migrate_or_source "$global_legacy" "$global_jsonc" "global"
   if [[ -f "$global_jsonc" ]]; then
-    apply_jsonc_layer "$global_jsonc"
+    apply_jsonc_layer "$global_jsonc" "global"
   elif [[ -f "$legacy_global_jsonc" ]]; then
     # Keep loading the legacy file if its secured migration could not complete.
-    apply_jsonc_layer "$legacy_global_jsonc"
+    apply_jsonc_layer "$legacy_global_jsonc" "global legacy"
   fi
 
-  # -- Repo team + personal layers --
+  # -- Global project, repo team + personal layers --
   if [[ -n "$cfg_root" ]]; then
+    if [[ -f "$projects_jsonc" ]]; then
+      if project_store_has_key "$projects_jsonc" "$main_root"; then
+        debug "config layer global project: found entry ($projects_jsonc key: $main_root)"
+      else
+        debug "config layer global project: entry missing ($projects_jsonc key: $main_root)"
+      fi
+    else
+      debug "config layer global project: missing ($projects_jsonc key: $main_root)"
+    fi
+    apply_project_layer "$projects_jsonc" "$main_root"
     maybe_migrate_or_source "$cfg_root/.gitkiss" "$cfg_root/.gitkiss.jsonc" "repo"
-    apply_jsonc_layer "$cfg_root/.gitkiss.jsonc"
-    apply_project_layer "$projects_jsonc" "$(canonical_main_worktree_path)"
-    apply_jsonc_layer "$cfg_root/.gitkiss.local.jsonc"
+    debug "config layer repo: $([[ -f "$cfg_root/.gitkiss.jsonc" ]] && echo found || echo missing) ($cfg_root/.gitkiss.jsonc)"
+    apply_jsonc_layer "$cfg_root/.gitkiss.jsonc" "repo"
+    # Linked worktrees inherit the main worktree's personal layer only when
+    # they do not provide their own final local override.
+    if [[ -n "$main_root" && "$repo_root" != "$main_root" ]]; then
+      if [[ -f "$repo_root/.gitkiss.local.jsonc" ]]; then
+        debug "config layer local: found ($repo_root/.gitkiss.local.jsonc)"
+        apply_jsonc_layer "$repo_root/.gitkiss.local.jsonc" "local"
+      else
+        debug "config layer local: $([[ -f "$main_root/.gitkiss.local.jsonc" ]] && echo found || echo missing) ($main_root/.gitkiss.local.jsonc)"
+        apply_jsonc_layer "$main_root/.gitkiss.local.jsonc" "local"
+      fi
+    else
+      debug "config layer local: $([[ -f "$cfg_root/.gitkiss.local.jsonc" ]] && echo found || echo missing) ($cfg_root/.gitkiss.local.jsonc)"
+      apply_jsonc_layer "$cfg_root/.gitkiss.local.jsonc" "local"
+    fi
   fi
 
   normalize_worktree_copy
-  debug "config: MAIN_BRANCH=$MAIN_BRANCH DEVELOP_BRANCH=${DEVELOP_BRANCH:-} STAGING_BRANCH=${STAGING_BRANCH:-} FEATURE_PREFIX=$FEATURE_PREFIX USE_TAGS=$USE_TAGS INITIALS=${INITIALS:-} WORKTREE_COPY=${WORKTREE_COPY[*]:-}"
+  debug "config effective: main_branch=$MAIN_BRANCH ($MAIN_BRANCH_SOURCE); develop_branch=${DEVELOP_BRANCH:-} ($DEVELOP_BRANCH_SOURCE); staging_branch=${STAGING_BRANCH:-} ($STAGING_BRANCH_SOURCE); feature_prefix=$FEATURE_PREFIX ($FEATURE_PREFIX_SOURCE); use_tags=$USE_TAGS ($USE_TAGS_SOURCE); initials=${INITIALS:-} ($INITIALS_SOURCE); worktree_copy=${WORKTREE_COPY[*]:-} ($WORKTREE_COPY_SOURCE)"
 }
 
 canonical_main_worktree_path() {
@@ -132,26 +174,57 @@ apply_project_layer() {
   local stripped entry
   stripped="$(strip_jsonc_comments "$store")"
   if ! printf '%s' "$stripped" | jq -e 'type == "object"' >/dev/null 2>&1; then
-    warn "Ignoring malformed project store: $store" >&2
-    return 0
+    die "Invalid project store: $store"
   fi
   if ! printf '%s' "$stripped" | jq -e --arg key "$key" 'has($key)' >/dev/null 2>&1; then
     return 0
   fi
   entry="$(printf '%s' "$stripped" | jq -c --arg key "$key" '.[$key]')"
   if ! printf '%s' "$entry" | jq -e 'type == "object"' >/dev/null 2>&1; then
-    warn "Ignoring malformed project entry for $key in $store" >&2
-    return 0
+    die "Invalid project entry for $key in $store"
   fi
   local tmp
   tmp="$(mktemp "${TMPDIR:-/tmp}/gk-project.XXXXXX")" || { warn "Could not read project store: $store" >&2; return 0; }
   printf '%s\n' "$entry" > "$tmp"
-  apply_jsonc_layer "$tmp"
+  apply_jsonc_layer "$tmp" "global project" "$store (key: $key)"
   rm -f "$tmp"
 }
 
-# If a legacy shell config exists and no .jsonc counterpart does: prompt to migrate
-# when interactive, otherwise source the legacy file in place (backwards compatible).
+# Parse the deliberately small legacy assignment format without executing it.
+# Compatibility covers the documented keys and simple quoted/unquoted values only.
+parse_legacy_config() {
+  local legacy="$1" logical_source="${2:-legacy}" line trimmed key value
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    trimmed="${line#"${line%%[![:space:]]*}"}"
+    [[ -z "$trimmed" || "$trimmed" == \#* ]] && continue
+    if [[ ! "$trimmed" =~ ^(MAIN_BRANCH|DEVELOP_BRANCH|STAGING_BRANCH|FEATURE_PREFIX|USE_TAGS|INITIALS|WORKTREE_COPY)=(.*)$ ]]; then
+      die "Unsafe or unsupported legacy configuration in $legacy"
+    fi
+    key="${BASH_REMATCH[1]}"; value="${BASH_REMATCH[2]}"
+    if [[ "$value" =~ ^\"([^\"\\]|\\.)*\"$ ]]; then
+      value="${value:1:${#value}-2}"
+      [[ "$value" != *\\* ]] || die "Unsupported escape sequence in legacy configuration: $legacy"
+      if [[ "$key" != "WORKTREE_COPY" && ( "$value" == *' '* || "$value" == *$'\t'* ) ]]; then
+        die "Unsafe or unsupported legacy configuration in $legacy"
+      fi
+    elif [[ "$value" == *';'* || "$value" == *'`'* || "$value" == *'$'* || "$value" == *')'* || "$value" == *'&'* || "$value" == *'|'* || "$value" == *'<'* || "$value" == *'>'* || ( "$key" != "WORKTREE_COPY" && ( "$value" == *' '* || "$value" == *$'\t'* ) ) ]]; then
+      die "Unsafe or unsupported legacy configuration in $legacy"
+    fi
+    case "$key" in
+      MAIN_BRANCH) MAIN_BRANCH="$value"; MAIN_BRANCH_SOURCE="$logical_source" ;;
+      DEVELOP_BRANCH) DEVELOP_BRANCH="$value"; DEVELOP_BRANCH_SOURCE="$logical_source" ;;
+      STAGING_BRANCH) STAGING_BRANCH="$value"; STAGING_BRANCH_SOURCE="$logical_source" ;;
+      FEATURE_PREFIX) FEATURE_PREFIX="$value"; FEATURE_PREFIX_SOURCE="$logical_source" ;;
+      USE_TAGS) USE_TAGS="$value"; USE_TAGS_SOURCE="$logical_source" ;;
+      INITIALS) INITIALS="$value"; INITIALS_SOURCE="$logical_source" ;;
+      WORKTREE_COPY) IFS=$' \t' read -r -a WORKTREE_COPY <<< "$value"; WORKTREE_COPY_SOURCE="$logical_source" ;;
+    esac
+  done < "$legacy"
+  validate_config_values "$legacy"
+}
+
+# If a legacy config exists and no JSONC counterpart does, offer conversion or
+# parse it safely for this invocation. It is never sourced.
 maybe_migrate_or_source() {
   local legacy="$1" jsonc="$2" scope="$3"
   [[ -f "$legacy" ]] || return 0
@@ -166,7 +239,7 @@ maybe_migrate_or_source() {
         migrate_scope "$scope" "$legacy"
         return 0
       fi
-      echo -e "${YELLOW}!${NC} Migration not available yet; using legacy file for now." >&2
+      echo -e "${YELLOW}!${NC} Migration not available yet; parsing legacy file for now." >&2
     else
       # Declined: do not silently source the legacy shell file (it can execute
       # arbitrary code). Ignore this layer so defaults / other layers apply.
@@ -174,24 +247,16 @@ maybe_migrate_or_source() {
       return 0
     fi
   else
-    echo -e "${YELLOW}!${NC} Using legacy $legacy — run 'gk migrate' to upgrade." >&2
+    echo -e "${YELLOW}!${NC} Parsing legacy $legacy - run 'gk migrate' to upgrade." >&2
   fi
-  # Unset array vars before sourcing so legacy scalar assignments are not swallowed into
-  # an existing array index (bash 3.2 silently coerces "VAR=val" into array element 0
-  # when VAR was previously declared as an array).
-  unset WORKTREE_COPY
-  # shellcheck source=/dev/null
-  source "$legacy"
+  parse_legacy_config "$legacy" "$scope legacy"
 }
 
-# A legacy `source` may set WORKTREE_COPY as a space-separated scalar string.
-# Normalise to an array so downstream code only ever sees an array.
+# Normalise a legacy WORKTREE_COPY scalar to an array for downstream code.
 normalize_worktree_copy() {
   if [[ "$(declare -p WORKTREE_COPY 2>/dev/null)" != "declare -a"* ]]; then
     local _str="${WORKTREE_COPY:-}"
-    WORKTREE_COPY=()
-    local _tok
-    for _tok in $_str; do WORKTREE_COPY+=("$_tok"); done
+    IFS=$' \t' read -r -a WORKTREE_COPY <<< "$_str"
   fi
 }
 
@@ -208,55 +273,44 @@ use_tags_bool() {
   if [[ "${USE_TAGS:-false}" == "true" ]]; then echo "true"; else echo "false"; fi
 }
 
-# Convert a legacy space-separated WORKTREE_COPY string into a compact JSON array.
+# Convert legacy WORKTREE_COPY values into a compact JSON array.
 legacy_worktree_copy_json() {
   require_command jq "$JSONC_HINT"
-  if [[ -z "${WORKTREE_COPY:-}" ]]; then
+  if [[ ${#WORKTREE_COPY[@]} -eq 0 ]]; then
     echo "[]"
     return
   fi
-  # Intentionally unquoted to split on whitespace (legacy format); set -f disables
-  # glob expansion so a literal pattern is not expanded against the cwd.
-  # shellcheck disable=SC2086  # deliberate word-splitting of the legacy space-separated list
-  ( set -f; printf '%s\n' ${WORKTREE_COPY} ) | jq -R . | jq -sc .
+  printf '%s\n' "${WORKTREE_COPY[@]}" | jq -R . | jq -sc .
 }
 
 write_repo_jsonc() {
-  local team="$1" localf="$2"
-  cat > "$team" <<EOF
+  local team="$1" localf="$2" team_json local_json copy_json
+  copy_json="$(legacy_worktree_copy_json)"
+  team_json="$(jq -n --arg main "$MAIN_BRANCH" --arg develop "${DEVELOP_BRANCH:-}" --arg staging "${STAGING_BRANCH:-}" --arg prefix "$FEATURE_PREFIX" --argjson tags "$(use_tags_bool)" '{main_branch:$main, develop_branch:$develop, staging_branch:$staging, feature_prefix:$prefix, use_tags:$tags}')"
+  local_json="$(jq -n --arg initials "${INITIALS:-}" --argjson copy "$copy_json" '{initials:$initials, worktree_copy:$copy}')"
+  {
+    cat <<EOF
 // git-kiss team config - commit this
 // Docs: https://github.com/${GITHUB_REPO}
-{
-  "main_branch": "${MAIN_BRANCH}",
-  "develop_branch": "${DEVELOP_BRANCH:-}",
-  "staging_branch": "${STAGING_BRANCH:-}",
-  "feature_prefix": "${FEATURE_PREFIX}",
-  "use_tags": $(use_tags_bool)
-}
 EOF
-  cat > "$localf" <<EOF
+    printf '%s\n' "$team_json"
+  } > "$team"
+  {
+    cat <<EOF
 // git-kiss personal config - gitignored
-{
-  "initials": "${INITIALS:-}",
-  "worktree_copy": $(legacy_worktree_copy_json)
-}
 EOF
+    printf '%s\n' "$local_json"
+  } > "$localf"
 }
 
 write_global_jsonc() {
-  local out="$1"
+  local out="$1" config_json copy_json
+  copy_json="$(legacy_worktree_copy_json)"
+  config_json="$(jq -n --arg main "${MAIN_BRANCH:-main}" --arg develop "${DEVELOP_BRANCH:-}" --arg staging "${STAGING_BRANCH:-}" --arg prefix "${FEATURE_PREFIX:-feature/}" --argjson tags "$(use_tags_bool)" --arg initials "${INITIALS:-}" --argjson copy "$copy_json" '{main_branch:$main, develop_branch:$develop, staging_branch:$staging, feature_prefix:$prefix, use_tags:$tags, initials:$initials, worktree_copy:$copy}')"
   atomic_write_private "$out" <<EOF
 // git-kiss global config
 // Docs: https://github.com/${GITHUB_REPO}
-{
-  "main_branch": "${MAIN_BRANCH:-main}",
-  "develop_branch": "${DEVELOP_BRANCH:-}",
-  "staging_branch": "${STAGING_BRANCH:-}",
-  "feature_prefix": "${FEATURE_PREFIX:-feature/}",
-  "use_tags": $(use_tags_bool),
-  "initials": "${INITIALS:-}",
-  "worktree_copy": $(legacy_worktree_copy_json)
-}
+$config_json
 EOF
 }
 
@@ -279,8 +333,8 @@ write_project_store_entry() {
   rm -f "$tmp"
 }
 
-# Migrate one scope. Sources the legacy file inside a subshell so its variables
-# don't leak between scopes; file writes persist. On failure, removes any partial
+# Migrate one scope. Parses the legacy file inside a subshell so its variables
+# do not leak between scopes; file writes persist. On failure, removes any partial
 # output and leaves the legacy file untouched.
 migrate_scope() {
   local scope="$1" legacy="$2"
@@ -288,12 +342,7 @@ migrate_scope() {
     local destination="$HOME/.gk/.gitkiss.jsonc"
     ensure_private_gk_dir || die "Could not safely prepare $(dirname "$destination")"
     [[ ! -f "$destination" ]] || { warn "Migration skipped: $destination already exists (legacy file preserved)." >&2; return 0; }
-    if ! (
-      unset WORKTREE_COPY
-      # shellcheck source=/dev/null
-      source "$legacy"
-      write_global_jsonc "$destination"
-    ); then
+    if ! ( parse_legacy_config "$legacy" "global legacy"; write_global_jsonc "$destination" ); then
       die "Migration failed; left $legacy untouched."
     fi
     mv "$legacy" "${legacy}.bak"
@@ -301,12 +350,7 @@ migrate_scope() {
   else
     local root
     root="$(dirname "$legacy")"
-    if ! (
-      unset WORKTREE_COPY
-      # shellcheck source=/dev/null
-      source "$legacy"
-      write_repo_jsonc "$root/.gitkiss.jsonc" "$root/.gitkiss.local.jsonc"
-    ); then
+    if ! ( parse_legacy_config "$legacy" "repo legacy"; write_repo_jsonc "$root/.gitkiss.jsonc" "$root/.gitkiss.local.jsonc" ); then
       rm -f "$root/.gitkiss.jsonc" "$root/.gitkiss.local.jsonc"
       die "Migration failed; left $legacy untouched."
     fi
@@ -372,7 +416,10 @@ success() { echo -e "${GREEN}✓${NC} $*"; }
 warn()    { echo -e "${YELLOW}!${NC} $*"; }
 error()   { echo -e "${RED}✗${NC} $*" >&2; }
 die()     { error "$@"; exit 1; }
-debug()   { if [[ "${GK_DEBUG:-}" == "1" ]]; then echo -e "${DIM}[debug] $*${NC}" >&2; fi; }
+debug_enabled() {
+  if [[ -n "${DEBUG+x}" ]]; then [[ "$DEBUG" == "1" ]]; else [[ "${GK_DEBUG:-}" == "1" ]]; fi
+}
+debug()   { if debug_enabled; then printf '%s[debug] %s%s\n' "$DIM" "$*" "$NC" >&2; fi; }
 
 current_branch() {
   git branch --show-current
@@ -477,36 +524,49 @@ strip_jsonc_comments() {
 }
 
 apply_jsonc_layer() {
-  local f="$1"
+  local f="$1" logical_source="${2:-$1}" display_source="${3:-$1}"
   [[ -f "$f" ]] || return 0
   require_command jq "$JSONC_HINT"
-  debug "loading jsonc config: $f"
+  debug "config layer $logical_source: loading $display_source"
 
   local stripped
   stripped="$(strip_jsonc_comments "$f")"
 
-  # One jq pass for all scalar keys. A parse failure here means malformed config:
-  # warn and skip the layer rather than silently dropping keys.
+  # A present layer is authoritative: malformed types must never make a
+  # mutating command fall back to defaults or an earlier layer.
+  if ! printf '%s' "$stripped" | jq -e '
+      type == "object"
+      and ([keys[] | select(. != "main_branch" and . != "develop_branch" and . != "staging_branch" and . != "feature_prefix" and . != "use_tags" and . != "initials" and . != "worktree_copy")] | length == 0)
+      and ((has("main_branch") | not) or (.main_branch | type == "string"))
+      and ((has("develop_branch") | not) or (.develop_branch | type == "string"))
+      and ((has("staging_branch") | not) or (.staging_branch | type == "string"))
+      and ((has("feature_prefix") | not) or (.feature_prefix | type == "string"))
+      and ((has("use_tags") | not) or (.use_tags | type == "boolean"))
+      and ((has("initials") | not) or (.initials | type == "string"))
+      and ((has("worktree_copy") | not) or (.worktree_copy | type == "array" and all(.[]; type == "string")))
+    ' >/dev/null 2>&1; then
+    die "Invalid configuration: $display_source (expected a supported JSON object with valid value types)"
+  fi
+
   local pairs
   if ! pairs="$(printf '%s' "$stripped" | jq -r '
         to_entries[]
         | select(.key=="main_branch" or .key=="develop_branch" or .key=="staging_branch"
                  or .key=="feature_prefix" or .key=="use_tags" or .key=="initials")
         | "\(.key)\t\(.value)"' 2>/dev/null)"; then
-    echo -e "${YELLOW}!${NC} Ignoring malformed config: $f (invalid JSON; comments must be on their own line)" >&2
-    return 0
+    die "Invalid configuration: $display_source (invalid JSON; comments must be on their own line)"
   fi
 
   local _k _v
   while IFS=$'\t' read -r _k _v; do
     if [[ -z "$_k" ]]; then continue; fi
     case "$_k" in
-      main_branch)    MAIN_BRANCH="$_v" ;;
-      develop_branch) DEVELOP_BRANCH="$_v" ;;
-      staging_branch) STAGING_BRANCH="$_v" ;;
-      feature_prefix) FEATURE_PREFIX="$_v" ;;
-      use_tags)       USE_TAGS="$_v" ;;
-      initials)       INITIALS="$_v" ;;
+      main_branch)    MAIN_BRANCH="$_v"; MAIN_BRANCH_SOURCE="$logical_source" ;;
+      develop_branch) DEVELOP_BRANCH="$_v"; DEVELOP_BRANCH_SOURCE="$logical_source" ;;
+      staging_branch) STAGING_BRANCH="$_v"; STAGING_BRANCH_SOURCE="$logical_source" ;;
+      feature_prefix) FEATURE_PREFIX="$_v"; FEATURE_PREFIX_SOURCE="$logical_source" ;;
+      use_tags)       USE_TAGS="$_v"; USE_TAGS_SOURCE="$logical_source" ;;
+      initials)       INITIALS="$_v"; INITIALS_SOURCE="$logical_source" ;;
     esac
   done <<< "$pairs"
 
@@ -515,7 +575,27 @@ apply_jsonc_layer() {
     WORKTREE_COPY=()
     local _e
     while IFS= read -r _e; do WORKTREE_COPY+=("$_e"); done < <(printf '%s' "$stripped" | jq -r '.worktree_copy[]?')
+    WORKTREE_COPY_SOURCE="$logical_source"
   fi
+  debug "config layer $logical_source: contributed $(printf '%s' "$stripped" | jq -c '.')"
+  validate_config_values "$display_source"
+}
+
+validate_branch_name() {
+  local label="$1" value="$2" source="$3"
+  [[ -z "$value" ]] && return 0
+  git check-ref-format --branch "$value" >/dev/null 2>&1 || die "Invalid $label in $source: $value"
+}
+
+validate_config_values() {
+  local source="$1" probe
+  validate_branch_name "main_branch" "$MAIN_BRANCH" "$source"
+  validate_branch_name "develop_branch" "$DEVELOP_BRANCH" "$source"
+  validate_branch_name "staging_branch" "$STAGING_BRANCH" "$source"
+  [[ "$USE_TAGS" == "true" || "$USE_TAGS" == "false" ]] || die "Invalid use_tags in $source"
+  [[ -n "$FEATURE_PREFIX" ]] || die "Invalid feature_prefix in $source"
+  probe="${FEATURE_PREFIX}gk-validation"
+  validate_branch_name "feature_prefix" "$probe" "$source"
 }
 
 # ─── Version Check ──────────────────────────────────────────────────────────
@@ -622,6 +702,11 @@ cmd_nf() {
 
   # Replace spaces with hyphens and lowercase
   name="$(echo "$name" | tr '[:upper:]' '[:lower:]' | tr ' ' '-')"
+  if [[ -n "$INITIALS" ]]; then
+    name="${INITIALS}-${name}"
+  fi
+  local branch_name="${FEATURE_PREFIX}${name}"
+  validate_branch_name "generated feature branch" "$branch_name" "gk nf"
 
   local base
   base="$(base_branch)"
@@ -630,11 +715,6 @@ cmd_nf() {
   git checkout "$base"
   run_rebase "Pull --rebase of $base" pull origin "$base" --rebase
 
-  if [[ -n "$INITIALS" ]]; then
-    name="${INITIALS}-${name}"
-  fi
-
-  local branch_name="${FEATURE_PREFIX}${name}"
   info "Creating branch $branch_name..."
   git checkout -b "$branch_name"
 
@@ -707,9 +787,27 @@ cmd_cm() {
 }
 
 cmd_rc() {
+  local force=false
+  [[ "${1:-}" == "--force" ]] && force=true
   # Check there is actually a commit to reset
   if ! git rev-parse HEAD~1 >/dev/null 2>&1; then
     die "No commits to reset."
+  fi
+
+  if [[ "$force" != true ]]; then
+    require_clean_tree
+    local branch parents
+    branch="$(current_branch)"
+    if [[ "$branch" == "$MAIN_BRANCH" || ( -n "$DEVELOP_BRANCH" && "$branch" == "$DEVELOP_BRANCH" ) || ( -n "$STAGING_BRANCH" && "$branch" == "$STAGING_BRANCH" ) ]]; then
+      die "Refusing to reset configured base branch $branch. Use 'gk rc!' only for an exceptional recovery."
+    fi
+    if git branch -r --contains HEAD 2>/dev/null | grep -q '[^[:space:]]'; then
+      die "Refusing to reset a commit already published to a remote. Use 'gk rc!' only for an exceptional recovery."
+    fi
+    parents="$(git rev-list --parents -n 1 HEAD)"
+    if [[ "$(wc -w <<< "$parents")" -gt 2 ]]; then
+      die "Refusing to reset a merge commit. Use 'gk rc!' only for an exceptional recovery."
+    fi
   fi
 
   local msg
@@ -718,9 +816,9 @@ cmd_rc() {
   info "Resetting last commit: $msg"
   git reset --mixed HEAD~1
 
-  # If tree is still clean, the commit was empty
+  # If tree is still clean, the commit was empty.
   if git diff --cached --quiet && git diff --quiet && [[ -z "$(git status --porcelain)" ]]; then
-    warn "Commit was empty — no changes to keep."
+    warn "Commit was empty - no changes to keep."
   else
     success "Last commit reset. Changes unstaged and in working tree."
   fi
@@ -755,6 +853,20 @@ cmd_pr() {
   gh pr create --base "$base" --title "$title" --fill "$@"
 }
 
+# Print the greatest strict vMAJOR.MINOR.PATCH tag. Creation dates and
+# non-semantic tags are intentionally irrelevant to release numbering.
+highest_semver_tag() {
+  git tag -l | awk '
+    /^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/ {
+      split(substr($0, 2), v, ".")
+      if (!found || v[1] > a || (v[1] == a && v[2] > b) || (v[1] == a && v[2] == b && v[3] > c)) {
+        found=1; a=v[1]; b=v[2]; c=v[3]; tag=$0
+      }
+    }
+    END { if (found) print tag }
+  '
+}
+
 cmd_dp() {
   local force=false
   if [[ "${1:-}" == "--force" ]]; then
@@ -783,8 +895,8 @@ cmd_dp() {
   if [[ "$USE_TAGS" == "true" ]]; then
     local latest_tag current_release next_release tag
 
-    if git describe --tags --match='v*' &>/dev/null; then
-      latest_tag="$(git describe --tags "$(git rev-list --tags='v*' --max-count=1)")"
+    latest_tag="$(highest_semver_tag)"
+    if [[ -n "$latest_tag" ]]; then
       current_release="${latest_tag#v}"
       # Increment patch version
       next_release="$(echo "$current_release" | awk -F. '{$NF = $NF + 1;} 1' | sed 's/ /./g')"
@@ -807,7 +919,7 @@ cmd_dp() {
 
     if [[ "$force" == true ]]; then
       info "Pushing to origin/$MAIN_BRANCH with tags..."
-      if git push --follow-tags origin "$MAIN_BRANCH"; then
+      if git push --atomic origin "refs/heads/$MAIN_BRANCH:refs/heads/$MAIN_BRANCH" "refs/tags/$tag:refs/tags/$tag"; then
         success "Here we go again, shipping to production. Hold onto your hats."
       else
         git tag -d "$tag" >/dev/null
@@ -817,7 +929,7 @@ cmd_dp() {
       echo ""
       read -r -p "Push to origin/$MAIN_BRANCH with tags? [y/N] " answer
       if [[ "$answer" == [yY] ]]; then
-        if git push --follow-tags origin "$MAIN_BRANCH"; then
+        if git push --atomic origin "refs/heads/$MAIN_BRANCH:refs/heads/$MAIN_BRANCH" "refs/tags/$tag:refs/tags/$tag"; then
           success "Here we go again, shipping to production. Hold onto your hats."
         else
           git tag -d "$tag" >/dev/null
@@ -913,7 +1025,7 @@ cmd_fs() {
   commit_count="$(git rev-list --count "$merge_base..HEAD")"
 
   if [[ "$commit_count" -le 1 ]]; then
-    success "Only $commit_count commit(s) on this branch — nothing to squash."
+    success "Only $commit_count commit(s) on this branch - nothing to squash."
     return
   fi
 
@@ -966,6 +1078,15 @@ cmd_init() {
   repo_root="$(git rev-parse --show-toplevel 2>/dev/null || die "Not a git repository.")"
   local team="$repo_root/.gitkiss.jsonc"
   local localf="$repo_root/.gitkiss.local.jsonc"
+  local cfg_root main_root summary_team summary_local
+  cfg_root="$(config_root 2>/dev/null || printf '%s' "$repo_root")"
+  main_root="$(canonical_main_worktree_path)"
+  summary_team="$cfg_root/.gitkiss.jsonc"
+  if [[ "$repo_root" != "$main_root" && ! -f "$repo_root/.gitkiss.local.jsonc" ]]; then
+    summary_local="$main_root/.gitkiss.local.jsonc"
+  else
+    summary_local="$repo_root/.gitkiss.local.jsonc"
+  fi
 
   local global="$HOME/.gk/.gitkiss.jsonc" projects="$HOME/.gk/projects.jsonc" key
   key="$(canonical_main_worktree_path)"
@@ -981,6 +1102,10 @@ cmd_init() {
   detected_main="$(detect_main_branch)"
   detected_develop="$(detect_develop_branch)"
   echo -e "${BOLD}git-kiss setup${NC}"
+  init_config_summary "Global" "$global"
+  init_project_summary "$projects" "$key"
+  init_config_summary "Repo" "$summary_team"
+  init_config_summary "Local" "$summary_local"
   printf "Main branch (default: %s): " "$detected_main"; read -r main_branch; main_branch="${main_branch:-$detected_main}"
   printf "Develop branch (blank for simple flow) [%s]: " "$detected_develop"; read -r develop_branch; develop_branch="${develop_branch:-$detected_develop}"
   printf "Staging branch (leave blank to skip): "; read -r staging_branch
@@ -1015,6 +1140,36 @@ cmd_init() {
       4) [[ ! -f "$localf" ]] || { printf "Overwrite local config? [y/N] "; read -r answer; [[ "$answer" == [yY] ]] || { info "Aborted."; return; }; }; printf '// git-kiss local repo config - gitignored\n%s\n' "$config" > "$localf"; ensure_gitignore "$repo_root" ".gitkiss.local.jsonc"; success "Config written to $localf" ;;
       *) die "Invalid destination." ;;
     esac
+  fi
+}
+
+init_config_summary() {
+  local label="$1" file="$2" compact
+  if [[ ! -f "$file" ]]; then
+    printf '%s: absent (%s)\n' "$label" "$file"
+    return
+  fi
+  compact="$(strip_jsonc_comments "$file" | jq -c . 2>/dev/null || true)"
+  if [[ -z "$compact" || "$compact" == "{}" ]]; then
+    printf '%s: empty (%s)\n' "$label" "$file"
+  else
+    printf '%s: %s (%s)\n' "$label" "$compact" "$file"
+  fi
+}
+
+init_project_summary() {
+  local store="$1" key="$2" entry
+  if [[ ! -f "$store" ]]; then
+    printf 'Global project: absent (%s; key: %s)\n' "$store" "$key"
+    return
+  fi
+  entry="$(strip_jsonc_comments "$store" | jq -c --arg key "$key" '.[$key] // empty' 2>/dev/null || true)"
+  if [[ -z "$entry" ]]; then
+    printf 'Global project: entry absent (%s; key: %s)\n' "$store" "$key"
+  elif [[ "$entry" == "{}" ]]; then
+    printf 'Global project: empty (%s; key: %s)\n' "$store" "$key"
+  else
+    printf 'Global project: %s (%s; key: %s)\n' "$entry" "$store" "$key"
   fi
 }
 
@@ -1115,27 +1270,36 @@ read_worktreeinclude() {
   done < "$file"
 }
 
-copy_worktree_files() {
-  local wt_path="$1"
-  local main_path
-  main_path="$(main_worktree_path)"
+validate_worktree_pattern() {
+  local pattern="$1" source="$2"
+  [[ -n "$pattern" && "$pattern" != /* ]] || die "Unsafe worktree copy pattern in $source: $pattern"
+  case "/$pattern/" in *'/../'*|*/'./'*) die "Unsafe worktree copy pattern in $source: $pattern" ;; esac
+}
 
-  # Combine the worktree_copy config array with patterns from a .worktreeinclude
-  # file in the project root into one deduplicated list of copy patterns.
-  local -a patterns=()
-  local _p _seen=$'\n'
-  while IFS= read -r _p; do
-    [[ -z "$_p" ]] && continue
-    case "$_seen" in *$'\n'"$_p"$'\n'*) continue ;; esac
-    patterns+=("$_p")
-    _seen="${_seen}${_p}"$'\n'
-  done < <(
-    for _p in "${WORKTREE_COPY[@]:-}"; do [[ -n "$_p" ]] && printf '%s\n' "$_p"; done
-    read_worktreeinclude "$main_path/.worktreeinclude"
-  )
+path_is_within() {
+  local path="$1" root="$2"
+  [[ "$path" == "$root" || "$path" == "$root/"* ]]
+}
 
-  if [[ ${#patterns[@]} -eq 0 ]]; then
-    return
+WORKTREE_COPY_MAIN_PATH=""
+WORKTREE_COPY_SOURCES=("")
+
+preflight_worktree_copy() {
+  local main_path include_file
+  main_path="$(canonical_main_worktree_path)"
+  WORKTREE_COPY_MAIN_PATH="$main_path"
+  WORKTREE_COPY_SOURCES=("")
+  include_file="$main_path/.worktreeinclude"
+  # A canonical-main .worktreeinclude is authoritative, including when it has
+  # no active patterns. Otherwise use the already-resolved configuration array.
+  local -a patterns=("")
+  local _p
+  if [[ -f "$include_file" ]]; then
+    debug "worktree copy: .worktreeinclude present; configured worktree_copy suppressed"
+    while IFS= read -r _p; do patterns+=("$_p"); done < <(read_worktreeinclude "$include_file")
+  else
+    debug "worktree copy: .worktreeinclude absent; using configured worktree_copy"
+    for _p in "${WORKTREE_COPY[@]:-}"; do [[ -n "$_p" ]] && patterns+=("$_p"); done
   fi
 
   local saved_nullglob saved_dotglob
@@ -1145,24 +1309,44 @@ copy_worktree_files() {
   # shellcheck disable=SC2064  # expand the saved shopt state now, at trap-set time, on purpose
   trap "eval $(printf '%q' "$saved_nullglob"); eval $(printf '%q' "$saved_dotglob"); trap - RETURN" RETURN
 
-  local copied=0 pattern src rel dest matched _done=$'\n'
+  local pattern src matched _done=$'\n' src_parent nested_link
   for pattern in "${patterns[@]}"; do
     [[ -z "$pattern" ]] && continue
+    validate_worktree_pattern "$pattern" "$([[ -f "$include_file" ]] && echo .worktreeinclude || echo worktree_copy)"
     matched=0
-    for src in "$main_path"/$pattern; do
+    while IFS= read -r src; do
       [[ -e "$src" ]] || continue
+      [[ ! -L "$src" ]] || die "Worktree copy refuses symlinks: $src"
+      src_parent="$(cd -P "$(dirname "$src")" && pwd)" || die "Could not resolve worktree copy source: $src"
+      path_is_within "$src_parent" "$main_path" || die "Worktree copy source escapes project root: $src"
+      if [[ -d "$src" ]]; then
+        nested_link="$(find "$src" -type l -print -quit 2>/dev/null)"
+        [[ -z "$nested_link" ]] || die "Worktree copy refuses symlinks: $nested_link"
+      fi
       matched=1
-      # A file may be matched by more than one pattern; copy it only once.
       case "$_done" in *$'\n'"$src"$'\n'*) continue ;; esac
       _done="${_done}${src}"$'\n'
-      rel="${src#"$main_path"/}"
-      dest="$wt_path/$rel"
-      mkdir -p "$(dirname "$dest")"
-      cp -a "$src" "$dest"
-      debug "worktree copy: $rel"
-      copied=$((copied + 1))
-    done
-    [[ "$matched" -eq 0 ]] && debug "worktree copy: no match for '$pattern'"
+      WORKTREE_COPY_SOURCES+=("$src")
+    done < <(compgen -G "$main_path/$pattern" || true)
+    if [[ "$matched" -eq 0 ]]; then
+      debug "worktree copy: no match for '$pattern'"
+    fi
+  done
+}
+
+copy_worktree_files() {
+  local wt_path="$1" src rel dest dest_parent physical_parent copied=0
+  for src in "${WORKTREE_COPY_SOURCES[@]}"; do
+    [[ -n "$src" ]] || continue
+    rel="${src#"$WORKTREE_COPY_MAIN_PATH"/}"
+    dest="$wt_path/$rel"
+    dest_parent="$(dirname "$dest")"
+    mkdir -p "$dest_parent"
+    physical_parent="$(cd -P "$dest_parent" && pwd)" || die "Could not resolve worktree copy destination: $dest"
+    path_is_within "$physical_parent" "$wt_path" || die "Worktree copy destination escapes worktree: $dest"
+    cp -a "$src" "$dest"
+    debug "worktree copy: $rel"
+    copied=$((copied + 1))
   done
 
   if [[ "$copied" -gt 0 ]]; then
@@ -1210,10 +1394,13 @@ cmd_wt_nf() {
   fi
 
   local branch_name="${FEATURE_PREFIX}${name}"
+  validate_branch_name "generated worktree branch" "$branch_name" "gk wt nf"
   local wt_path
   wt_path="$(worktree_dir_name "$name")"
   local base
   base="$(base_branch)"
+
+  preflight_worktree_copy
 
   info "Fetching latest $base..."
   git fetch origin "$base"
@@ -1234,11 +1421,14 @@ cmd_wt_nb() {
   fi
 
   name="$(echo "$name" | tr '[:upper:]' '[:lower:]' | tr ' ' '-')"
+  validate_branch_name "generated worktree branch" "$name" "gk wt nb"
 
   local wt_path
   wt_path="$(worktree_dir_name "$name")"
   local base
   base="$(base_branch)"
+
+  preflight_worktree_copy
 
   info "Fetching latest $base..."
   git fetch origin "$base"
@@ -1252,20 +1442,12 @@ cmd_wt_nb() {
   echo -e "  cd $wt_path"
 }
 
-cmd_wt_ls() {
+print_worktree_table() {
   local base
   base="$(base_branch)"
   local current_wt
   current_wt="$(git rev-parse --show-toplevel)"
 
-  parse_worktrees
-
-  if [[ ${#WT_PATHS[@]} -eq 0 ]]; then
-    info "No worktrees found."
-    return
-  fi
-
-  # Header
   echo ""
   printf "  ${BOLD}%-4s %-30s %-40s %s${NC}\n" "#" "Branch" "Path" "Status"
   echo "  ─────────────────────────────────────────────────────────────────────────────────"
@@ -1311,6 +1493,17 @@ cmd_wt_ls() {
   echo ""
 }
 
+cmd_wt_ls() {
+  parse_worktrees
+
+  if [[ ${#WT_PATHS[@]} -eq 0 ]]; then
+    info "No worktrees found."
+    return
+  fi
+
+  print_worktree_table
+}
+
 cmd_wt_co() {
   if [[ $# -gt 1 ]]; then
     die "Usage: gk wt co [index]"
@@ -1327,20 +1520,8 @@ cmd_wt_co() {
     info "No other worktrees to switch to." >&2
     return
   else
-    # Show numbered list (all UI on stderr so stdout stays clean for cd).
-    echo "" >&2
-    for i in "${!WT_PATHS[@]}"; do
-      local wt_path="${WT_PATHS[$i]}"
-      local wt_branch="${WT_BRANCHES[$i]}"
-
-      if [[ "$wt_path" == "$current_wt" ]]; then
-        printf "  ${GREEN}● %-4s${NC} %s\n" "$i" "$wt_branch" >&2
-      else
-        printf "    %-4s %s\n" "$i" "$wt_branch" >&2
-      fi
-    done
-    echo "" >&2
-
+    # Keep selector UI on stderr so stdout stays clean for shell integration.
+    print_worktree_table >&2
     echo -n "Switch to [#]: " >&2
     if ! read -r choice || [[ -z "$choice" ]]; then
       info "Aborted." >&2
@@ -1548,20 +1729,29 @@ cmd_wt_clean() {
   fi
 
   local removed=0
+  local failures=0
   for i in "${!clean_paths[@]}"; do
     info "Removing ${clean_branches[$i]} (${clean_paths[$i]})..."
-    git worktree remove "${clean_paths[$i]}" --force 2>/dev/null || true
-    git branch -d "${clean_branches[$i]}" 2>/dev/null || true
-    success "Removed ${clean_branches[$i]}"
-    removed=$((removed + 1))
+    if git worktree remove "${clean_paths[$i]}" --force; then
+      if git branch -d "${clean_branches[$i]}" 2>/dev/null; then
+        success "Removed ${clean_branches[$i]}"
+      else
+        warn "Removed worktree ${clean_branches[$i]}, but could not delete its branch."
+      fi
+      removed=$((removed + 1))
+    else
+      error "Could not remove ${clean_branches[$i]} (${clean_paths[$i]})."
+      failures=$((failures + 1))
+    fi
   done
 
   success "Cleaned up $removed worktree(s)."
+  [[ "$failures" -eq 0 ]] || return 1
 }
 
 cmd_wt_help() {
   cat <<EOF
-${BOLD}git-kiss worktree${NC} — manage git worktrees
+${BOLD}git-kiss worktree${NC} - manage git worktrees
 
 ${BOLD}USAGE${NC}
   gk wt <command> [args]
@@ -1570,7 +1760,7 @@ ${BOLD}COMMANDS${NC}
   nf <name>          New worktree with feature branch (uses prefix + initials)
   nb <name>          New worktree with plain branch
   ls                 List all worktrees with status
-  co [index]         Checkout a worktree (interactive selector or displayed index)
+  co [index]         Checkout a worktree (interactive status table or displayed index)
   rm <index|name>    Remove a worktree by index or branch name (prompts if dirty)
   rm! <index|name>   Remove a worktree, skipping the dirty-tree prompt
   clean              Remove merged worktrees (skips any with uncommitted changes)
@@ -1591,8 +1781,8 @@ ${BOLD}CONFIG${NC}
                     new worktrees. Useful for gitignored files like .env.
                     Example (.gitkiss.local.jsonc): "worktree_copy": [".env*", "config/local"]
   .worktreeinclude  Optional file in the project root, .gitignore-style (one glob per
-                    line, # comments, blank lines ignored). Merged with worktree_copy
-                    into a single list; matches from both are copied into new worktrees.
+                    line, # comments, blank lines ignored). When present it is authoritative
+                    and suppresses worktree_copy; absolute/traversal patterns and symlinks are refused.
 
 ${BOLD}TIP${NC}
   Add shell integration so 'gk wt co' cds you straight there:
@@ -1604,7 +1794,7 @@ EOF
 
 cmd_help() {
   cat <<EOF
-${BOLD}git-kiss${NC} v${VERSION} — Keep It Simple, Stupid git flow
+${BOLD}git-kiss${NC} v${VERSION} - Keep It Simple, Stupid git flow
 
 ${BOLD}USAGE${NC}
   gk <command> [args]
@@ -1616,7 +1806,7 @@ ${BOLD}COMMANDS${NC}
   sf           Squash feature commits into one (with prompt)
   sf!          Squash feature commits into one (no prompt)
   cm <msg>     Add all changes and commit with message
-  rc           Reset last commit (keep changes unstaged in working tree)
+  rc / rc!     Reset last commit safely / force an exceptional reset
   pf           Publish feature branch to remote
   pr <title>   Create a pull request (requires gh CLI)
   rf           Rebase feature branch against base branch
@@ -1632,8 +1822,8 @@ ${BOLD}COMMANDS${NC}
 
 ${BOLD}CONFIG${NC} (JSONC, cascading - later overrides earlier)
   Global:   ~/.gk/.gitkiss.jsonc
-  Team:     .gitkiss.jsonc        (commit this)
   Project:  ~/.gk/projects.jsonc
+  Team:     .gitkiss.jsonc        (commit this)
   Personal: .gitkiss.local.jsonc  (gitignored)
 
   Run ${BOLD}gk init${NC} to generate config, or ${BOLD}gk migrate${NC} to upgrade an old one.
@@ -1664,7 +1854,7 @@ EOF
 # ─── Dispatcher ──────────────────────────────────────────────────────────────
 
 main() {
-  debug "gk v${VERSION} — $(bash --version | head -1)"
+  debug "gk v${VERSION} - $(bash --version | head -1)"
 
   if [[ "${1:-}" == "shell-init" ]]; then
     cmd_shell_init
@@ -1674,6 +1864,11 @@ main() {
   local cmd="${1:-help}"
   shift || true
   debug "command: gk $cmd $*"
+
+  case "$cmd" in
+    help|--help|-h) cmd_help; return ;;
+    version|--version) cmd_version; return ;;
+  esac
 
   require_git_repo
 
@@ -1701,6 +1896,7 @@ main() {
     'sf!')    cmd_fs --force "$@" ;;
     cm)       cmd_cm "$@" ;;
     rc)       cmd_rc "$@" ;;
+    'rc!')    cmd_rc --force "$@" ;;
     pf)       cmd_pf "$@" ;;
     pr)       cmd_pr "$@" ;;
     dp)       cmd_dp "$@" ;;
@@ -1710,8 +1906,6 @@ main() {
     rf)       cmd_rf "$@" ;;
     wt)       cmd_wt "$@" ;;
     init)     cmd_init "$@" ;;
-    help|--help|-h)    cmd_help ;;
-    version|--version) cmd_version ;;
     *)
       error "Unknown command: $cmd"
       echo ""

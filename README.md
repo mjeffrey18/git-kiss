@@ -37,7 +37,7 @@ gk ff                # finish feature (merge into base branch)
 | `gk ff` / `ff!`   | **Finish feature** — merge feature into base branch (merge commit)      |
 | `gk sf` / `sf!`   | **Squash feature** — squash all commits on the branch into one          |
 | `gk cm "<msg>"`   | **Commit** — add all changes and commit with message                    |
-| `gk rc`           | **Reset commit** — undo the last commit, keeping changes unstaged       |
+| `gk rc` / `rc!`   | **Reset commit** - safely undo the last commit, keeping changes unstaged |
 | `gk pf`           | **Publish feature** — push feature branch to remote                     |
 | `gk pr "<title>"` | **Pull request** — create a PR via `gh` CLI (supports extra `gh` flags) |
 | `gk rf`           | **Rebase feature** — rebase feature against base branch                 |
@@ -80,7 +80,7 @@ gk pr "Refactor auth" --body "Switched to JWT tokens"
 | `gk wt rm! <id>`  | Remove a worktree, skipping the dirty-tree prompt                        |
 | `gk wt clean`     | Remove merged worktrees (skips any with uncommitted changes)             |
 | `gk wt clean!`    | Remove merged worktrees, including any with uncommitted changes          |
-| `gk wt co [index]`| Select a worktree interactively or by displayed index (cds with shell-init) |
+| `gk wt co [index]`| Select from the worktree status table or use a displayed index (cds with shell-init) |
 
 ```bash
 gk wt nf task1      # create worktree with feature/mj-task1 branch
@@ -97,12 +97,15 @@ gk wt clean         # clean up merged worktrees
 
 A new worktree is a fresh checkout of the base branch, so anything you don't commit — `.env` files, local config, editor settings — won't be there. git-kiss can copy those over automatically from your main worktree when it creates one.
 
-There are two sources, **merged and de-duplicated** into a single list:
+`.worktreeinclude` is authoritative whenever it exists in the canonical main
+worktree. If it is absent, git-kiss falls back to `worktree_copy` from the
+effective configuration. An empty or comment-only include file intentionally
+copies nothing.
 
 | Source                                     | Tracked         | Best for                                    |
 | ------------------------------------------ | --------------- | ------------------------------------------- |
-| `.worktreeinclude` in the project root     | commit it       | team-wide defaults, shared by everyone      |
-| `worktree_copy` in your `.gitkiss.*.jsonc` | varies by layer | personal additions (`.gitkiss.local.jsonc`) |
+| `.worktreeinclude` in the canonical main worktree | commit it | authoritative team-wide copy list |
+| `worktree_copy` in your `.gitkiss.*.jsonc` | varies by layer | fallback when no include file exists |
 
 #### .worktreeinclude
 
@@ -122,11 +125,11 @@ config/local
 ```jsonc
 // .gitkiss.local.jsonc - gitignored personal overrides
 {
-  "worktree_copy": [".env*", "config/local"],
+  "worktree_copy": [".env*", "config/local"]
 }
 ```
 
-Both are resolved as shell globs **relative to the project root** and copied from your main worktree's current working tree (so uncommitted files come across too). A path listed in both sources is copied only once.
+Patterns are resolved as shell globs **relative to the project root** and copied from your main worktree's current working tree (so uncommitted files come across too). Literal paths containing spaces are supported. Absolute paths and `.` / `..` path components are rejected. Symlinks are refused rather than copied, so a copy source cannot escape the project root. Linked worktrees use the canonical main-worktree include file and inherit the main worktree's `.gitkiss.local.jsonc` unless they provide their own local override.
 
 ### Navigating between worktrees
 
@@ -152,7 +155,7 @@ alias wtco='cd $(gk wt co)'
 
 ### Worktree status
 
-`gk wt ls` output:
+`gk wt ls` and the interactive `gk wt co` selector show:
 
 ```
   #    Branch                         Path                                     Status
@@ -263,8 +266,8 @@ overrides keys set by earlier ones, so you only set what you want to change:
 | Location               | Scope                                  | Tracked    |
 | ---------------------- | -------------------------------------- | ---------- |
 | `~/.gk/.gitkiss.jsonc` | global personal defaults for all repos | n/a        |
+| `~/.gk/projects.jsonc` | per-project personal defaults           | n/a        |
 | `.gitkiss.jsonc`       | per-repo team config                   | commit it  |
-| `~/.gk/projects.jsonc` | per-project personal overrides          | n/a        |
 | `.gitkiss.local.jsonc` | per-repo personal overrides            | gitignored |
 
 Project-store entries are keyed by the canonical main-worktree path, so linked
@@ -274,7 +277,7 @@ or `gk migrate` to upgrade legacy configuration.
 
 `~/.gk/projects.jsonc` is machine-managed: edit it only when git-kiss is not
 running, and do not commit or share it. The precedence order is built-in defaults,
-global configuration, shared repository configuration, the project-store entry,
+global configuration, the project-store entry, shared repository configuration,
 then local repository configuration. Legacy `~/.git-kiss.jsonc` is migrated to
 `~/.gk/.gitkiss.jsonc` on the next normal command when no destination collision
 exists; collisions leave the legacy file untouched.
@@ -286,7 +289,7 @@ exists; collisions leave the legacy file untouched.
   "develop_branch": "develop",
   "staging_branch": "staging",
   "feature_prefix": "feature/",
-  "use_tags": true,
+  "use_tags": true
 }
 ```
 
@@ -294,7 +297,7 @@ exists; collisions leave the legacy file untouched.
 // .gitkiss.local.jsonc - gitignored personal overrides
 {
   "initials": "mj",
-  "worktree_copy": [".env*", "config/local"],
+  "worktree_copy": [".env*", "config/local"]
 }
 ```
 
@@ -306,7 +309,7 @@ exists; collisions leave the legacy file untouched.
 | `feature_prefix` | `feature/` | Prefix for feature branches                                                                                              |
 | `use_tags`       | `true`     | Auto-increment semver tags on `gk dp`                                                                                    |
 | `initials`       |            | Prepended to feature branches (e.g. `mj`) - usually in `.local`                                                          |
-| `worktree_copy`  | `[]`       | Files/folders (literal or glob) copied into new worktrees (merged with `.worktreeinclude` — see [Worktrees](#worktrees)) |
+| `worktree_copy`  | `[]`       | Files/folders (literal or glob) copied into new worktrees when no `.worktreeinclude` exists - see [Worktrees](#worktrees) |
 
 > Comments must be on their own line (`//`). Inline and `/* */` comments aren't supported.
 

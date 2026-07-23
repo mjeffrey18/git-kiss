@@ -83,9 +83,9 @@ EOF
   printf '{ "feature_prefix": "legacy/" }\n' > "$HOME/.git-kiss.jsonc"
   ln -s "$BATS_TEST_TMPDIR/missing-gk-directory" "$HOME/.gk"
 
-  GK_DEBUG=1 run bash "$GK" version
+  GK_DEBUG=1 run bash "$GK" wt ls
   assert_success
-  assert_output --partial "FEATURE_PREFIX=legacy/"
+  assert_output --partial "feature_prefix=legacy/ (global legacy)"
   [ -f "$HOME/.git-kiss.jsonc" ]
 }
 
@@ -108,13 +108,13 @@ EOF
 @test "ordinary command migrates legacy global JSONC and preserves a collision" {
   set_temp_home
   printf '{ "feature_prefix": "ordinary/" }\n' > "$HOME/.git-kiss.jsonc"
-  run bash "$GK" version
+  run bash "$GK" wt ls
   assert_success
   [ -f "$HOME/.gk/.gitkiss.jsonc" ]
   [ ! -f "$HOME/.git-kiss.jsonc" ]
 
   printf '{ "feature_prefix": "collision/" }\n' > "$HOME/.git-kiss.jsonc"
-  run bash "$GK" version
+  run bash "$GK" wt ls
   assert_success
   [ -f "$HOME/.git-kiss.jsonc" ]
   assert_output --partial "migration skipped"
@@ -130,6 +130,58 @@ EOF
   [ ! -f "$REPO_DIR/.gitkiss.jsonc" ]
   run git branch --show-current
   assert_output "feat/zz-thing"
+}
+
+@test "legacy config debug reports the winning repo layer" {
+  write_legacy_config "$REPO_DIR/.gitkiss" FEATURE_PREFIX=legacy/ INITIALS=zz WORKTREE_COPY=".env"
+  git add .gitkiss && git commit -m "legacy debug provenance" >/dev/null 2>&1
+
+  DEBUG=1 run bash "$GK" wt ls
+  assert_success
+  assert_output --partial "feature_prefix=legacy/ (repo legacy)"
+  assert_output --partial "initials=zz (repo legacy)"
+  assert_output --partial "worktree_copy=.env (repo legacy)"
+}
+
+@test "legacy config never executes command substitutions and rejects unsupported keys" {
+  local marker="$BATS_TEST_TMPDIR/legacy-executed"
+  printf 'FEATURE_PREFIX=$(touch %s)\n' "$marker" > "$REPO_DIR/.gitkiss"
+  git add .gitkiss && git commit -m "malicious legacy" >/dev/null 2>&1
+
+  run bash "$GK" wt ls
+  assert_failure
+  assert_output --partial "Unsafe or unsupported legacy"
+  [ ! -e "$marker" ]
+
+  printf 'UNSUPPORTED_KEY=value\n' > "$REPO_DIR/.gitkiss"
+  git add .gitkiss && git commit -m "unsupported legacy" >/dev/null 2>&1
+  run bash "$GK" wt ls
+  assert_failure
+  assert_output --partial "Unsafe or unsupported legacy"
+}
+
+@test "legacy config accepts indented comments and rejects JSON-sensitive scalar values" {
+  cat > "$REPO_DIR/.gitkiss" <<'EOF'
+
+  # indented comment
+FEATURE_PREFIX=feat/
+DEVELOP_BRANCH=
+STAGING_BRANCH=
+USE_TAGS=false
+INITIALS=ok
+EOF
+  git add .gitkiss && git commit -m "indented legacy" >/dev/null 2>&1
+  run bash "$GK" nf sample
+  assert_success
+  run git branch --show-current
+  assert_output "feat/ok-sample"
+
+  git checkout main >/dev/null 2>&1
+  printf 'INITIALS="tab\tvalue"\n' > "$REPO_DIR/.gitkiss"
+  git add .gitkiss && git commit -m "tab legacy" >/dev/null 2>&1
+  run bash "$GK" migrate
+  assert_failure
+  assert_output --partial "Unsafe or unsupported legacy"
 }
 
 @test "gk migrate with nothing to migrate is a no-op" {

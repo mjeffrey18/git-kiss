@@ -5,6 +5,9 @@ on:
   push:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
   lint:
     name: shellcheck
@@ -12,10 +15,18 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       # shellcheck is preinstalled on ubuntu-latest runners.
+      - name: Check shell syntax
+        run: bash -n bin/gk install.sh
+
       - name: Run shellcheck
-        run: shellcheck bin/gk install.sh
+        run: shellcheck -x bin/gk install.sh
+
+      - name: Check whitespace
+        run: git diff --check HEAD^ HEAD
 
   bats:
     name: bats (${{ matrix.os }})
@@ -39,4 +50,7 @@ jobs:
         run: brew install jq bats-core
 
       - name: Run tests
+        env:
+          HOME: ${{ runner.temp }}/gk-home
+          GK_NO_VERSION_CHECK: "1"
         run: bats tests/

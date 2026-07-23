@@ -42,6 +42,13 @@ teardown() {
   assert_output --partial "gk v"
 }
 
+@test "gk version works outside a git repository" {
+  cd "$BATS_TEST_TMPDIR"
+  run bash "$GK" version
+  assert_success
+  assert_output --partial "gk v"
+}
+
 @test "gk unknown command fails" {
   run bash "$GK" foobar
   assert_failure

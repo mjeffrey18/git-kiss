@@ -83,6 +83,29 @@ run_init_tty() {
   assert_success
 }
 
+@test "TTY init displays raw layers in Global, Global project, Repo, Local order" {
+  run env REPO_PATH="$REPO_DIR" GK_PATH="$GK" expect -c '
+    set timeout 10
+    cd $env(REPO_PATH)
+    spawn -noecho bash $env(GK_PATH) init
+    expect -re "Global: absent.*\\r\\n"
+    expect -re "Global project: absent.*key: .*\\r\\n"
+    expect -re "Repo: absent.*\\r\\n"
+    expect -re "Local: absent.*\\r\\n"
+    expect -exact "Main branch (default: main): "; send "\\r"
+    expect -exact "Develop branch (blank for simple flow) \\[develop\\]: "; send "\\r"
+    expect -exact "Staging branch (leave blank to skip): "; send "\\r"
+    expect -exact "Feature prefix (default: feature/ if blank): "; send "\\r"
+    expect -exact "Use tags? \\[Y/n\\]: "; send "\\r"
+    expect -exact "Your initials (leave blank to skip): "; send "\\r"
+    expect -exact "Worktree copy paths, space-separated \\[]: "; send "\\r"
+    expect -exact "Choose where to store the config\\r\\n"
+    expect -exact "1) Global\\r\\n2) Global project store\\r\\n3) This repo (Git tracked)\\r\\n4) This repo (local only)\\r\\nSelect \\[1-4\\]: "; send "4\\r"
+    expect eof
+  '
+  assert_success
+}
+
 @test "TTY init detects master and dev when preferred branches are absent" {
   git branch -m main master
   git update-ref -d refs/remotes/origin/main
