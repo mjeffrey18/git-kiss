@@ -3,7 +3,7 @@
 ## Prerequisites
 
 - **git** (any recent version)
-- **bash** 4.0+ (macOS ships with 3.x — install via `brew install bash` if needed)
+- **bash** 3.2+ - the macOS test job exercises the system Bash 3.2 compatibility baseline
 - **bats-core** for running tests
 
 ## Setup
@@ -68,7 +68,7 @@ bats tests/wt.bats --filter "gk wt ls"
 
 ### How Tests Work
 
-Each test creates a temporary git repo with a bare remote in `/tmp`, runs `gk` commands against it, and cleans up afterwards. No real repos are touched.
+Each test creates a temporary git repo with a bare remote in `/tmp`, runs `gk` commands against it, and cleans up afterwards. No real repos are touched. CI runs the suite on macOS and Linux; macOS covers the Bash 3.2 baseline.
 
 - **`tests/test_helper/setup.bash`** — shared helpers (`setup_test_repo`, `setup_full_flow_repo`, `teardown_test_repo`, `create_feature_branch`)
 - **`tests/test_helper/bats-support/`** — assertion support library (git submodule)
@@ -77,6 +77,9 @@ Each test creates a temporary git repo with a bare remote in `/tmp`, runs `gk` c
 ### Writing Tests
 
 When adding new tests, keep these in mind:
+
+- Use `DEBUG=1` when asserting configuration traces. Diagnostics are written to stderr; `GK_DEBUG=1` remains a compatibility fallback only when `DEBUG` is unset.
+- Test worktree seeding against the canonical main worktree. A present `.worktreeinclude` is authoritative, even when empty; `worktree_copy` applies only when that file is absent.
 
 1. **Commit config changes** — if you write a `.gitkiss` file mid-test, `git add` and commit it. Otherwise commands that pull from origin will fail with "dirty tree" errors.
 
@@ -102,10 +105,10 @@ When adding new tests, keep these in mind:
 
 ## Debugging
 
-Set `GK_DEBUG=1` to enable debug logging. All debug output goes to stderr in dimmed text, so it won't interfere with stdout (e.g. `gk wt co`).
+Set `DEBUG=1` to enable debug logging. All debug output goes to stderr in dimmed text, so it won't interfere with stdout (e.g. `gk wt co`). `GK_DEBUG=1` remains a compatibility fallback only when `DEBUG` is unset; explicit `DEBUG=0` disables diagnostics.
 
 ```bash
-GK_DEBUG=1 gk help
+DEBUG=1 gk help
 ```
 
 This logs:
@@ -117,8 +120,8 @@ This logs:
 You can also combine it with other commands:
 
 ```bash
-GK_DEBUG=1 gk nf my-feature
-GK_DEBUG=1 gk wt ls
+DEBUG=1 gk nf my-feature
+DEBUG=1 gk wt ls
 ```
 
 ## Installing Locally

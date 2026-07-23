@@ -7,9 +7,9 @@ git-kiss (`gk`) is a single-file Bash CLI tool that wraps common git operations 
 ## Architecture
 
 - **Single script**: All logic is in `bin/gk` — no build step, dependencies are git, bash, and jq (jq required for config parsing; `gh` only for `gk pr`)
-- **Config**: JSONC parsed with `jq`, loaded from four cascading layers: `~/.gk/.gitkiss.jsonc` (global) -> `.gitkiss.jsonc` (committed team) -> `~/.gk/projects.jsonc` (canonical main-worktree key) -> `.gitkiss.local.jsonc` (gitignored personal); later overrides earlier
+- **Config**: JSONC parsed with `jq`, loaded from four cascading layers: `~/.gk/.gitkiss.jsonc` (global) -> `~/.gk/projects.jsonc` (canonical main-worktree key) -> `.gitkiss.jsonc` (committed team) -> `.gitkiss.local.jsonc` (gitignored personal); later overrides earlier
 - **Two flows**: "Full" (main/develop/staging with tags) and "Simple" (main/feature only)
-- **Worktrees**: `gk wt` subcommands manage git worktrees as sibling directories (`repo--name`). When a worktree is created, files are seeded into it by combining the `worktree_copy` config array with patterns from an optional `.worktreeinclude` file in the project root (`.gitignore`-style: one glob per line, `#` comments, blank lines ignored); the two sources are merged and deduplicated
+- **Worktrees**: `gk wt` subcommands manage git worktrees as sibling directories (`repo--name`). A `.worktreeinclude` file in the canonical main worktree is authoritative when present (`.gitignore`-style: one glob per line, `#` comments and blank lines ignored), including an intentionally empty file; otherwise files are seeded from the effective `worktree_copy` config array
 - **Version check**: Runs after every command, compares against GitHub, checks once per day via a timestamp file at `$HOME/.gk/version_check`. Set `GK_NO_VERSION_CHECK` to any non-empty value to disable it
 
 ## Key Conventions

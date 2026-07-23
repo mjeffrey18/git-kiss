@@ -32,11 +32,11 @@ teardown() {
   assert_output --partial "git-kiss"
 }
 
-@test "gk outside git repo fails" {
+@test "gk help works outside a git repository" {
   cd /tmp
   run bash "$GK" help
-  assert_failure
-  assert_output --partial "Not a git repository"
+  assert_success
+  assert_output --partial "git-kiss"
 }
 
 @test "gk in worktree falls back to main repo config" {

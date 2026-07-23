@@ -122,3 +122,35 @@ teardown() {
   run git tag -l "v0.0.2"
   assert_output "v0.0.2"
 }
+
+@test "gk dp selects the highest strict semantic version tag" {
+  git tag v1.9.9
+  git tag v2.0.0
+  git tag v02.0.0
+  git tag v2.00.0
+  git tag v99
+  git tag v3.0.0-rc.1
+  echo "ready" > strict-semver.txt
+  git add -A && git commit -m "strict semver" >/dev/null 2>&1
+  git push origin develop >/dev/null 2>&1
+
+  run bash "$GK" 'dp!'
+  assert_success
+  assert_output --partial "v2.0.1"
+  run git tag -l "v2.0.1"
+  assert_output "v2.0.1"
+}
+
+@test "gk dp pushes only the intended annotated release tag" {
+  git tag -a release-notes -m "unrelated reachable tag"
+  echo "ready" > exact-tag.txt
+  git add -A && git commit -m "exact tag" >/dev/null 2>&1
+  git push origin develop >/dev/null 2>&1
+
+  run bash "$GK" 'dp!'
+  assert_success
+  run git --git-dir="$REMOTE_DIR" tag -l 'release-notes'
+  assert_output ""
+  run git --git-dir="$REMOTE_DIR" tag -l 'v0.0.1'
+  assert_output "v0.0.1"
+}

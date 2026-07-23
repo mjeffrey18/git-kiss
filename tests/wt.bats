@@ -77,6 +77,14 @@ teardown() {
   assert_output --partial "Usage"
 }
 
+@test "gk wt nb rejects an invalid generated branch before fetching" {
+  run bash "$GK" wt nb 'bad..branch'
+  assert_failure
+  assert_output --partial "Invalid generated worktree branch"
+  [ "$(git worktree list | wc -l | tr -d ' ')" -eq 1 ]
+  ! git show-ref --verify --quiet refs/heads/bad..branch
+}
+
 # ─── wt ls ──────────────────────────────────────────────────────────────────
 
 @test "gk wt ls shows main worktree" {
@@ -222,11 +230,40 @@ teardown() {
   local wt_dir
   wt_dir="$(dirname "$REPO_DIR")/$(basename "$REPO_DIR")--hotfix-db"
 
-  # Select index 1 (the new worktree) — capture stdout only
+  # Select index 1 (the new worktree) - capture stdout only
   local result
   result="$(GK_NO_VERSION_CHECK=1 bash "$GK" wt co <<< "1")"
   # Resolve symlinks for macOS /var -> /private/var
   [ "$(cd "$result" && pwd -P)" = "$(cd "$wt_dir" && pwd -P)" ]
+}
+
+@test "gk wt co interactive selector shows worktree status details" {
+  bash "$GK" wt nb hotfix-db >/dev/null 2>&1
+
+  local wt_dir stdout err_file
+  wt_dir="$(dirname "$REPO_DIR")/$(basename "$REPO_DIR")--hotfix-db"
+  stdout="$BATS_TEST_TMPDIR/stdout"
+  err_file="$BATS_TEST_TMPDIR/stderr"
+
+  echo "committed" > "$wt_dir/committed.txt"
+  git -C "$wt_dir" add committed.txt
+  git -C "$wt_dir" commit -m "worktree commit" >/dev/null 2>&1
+  echo "dirty" > "$wt_dir/dirty.txt"
+
+  run bash -c 'bash "$1" wt co <<< "1" > "$2" 2> "$3"' _ "$GK" "$stdout" "$err_file"
+  assert_success
+  [ "$(cd "$(cat "$stdout")" && pwd -P)" = "$(cd "$wt_dir" && pwd -P)" ]
+
+  local selector
+  selector="$(cat "$err_file")"
+  [[ "$selector" == *"Branch"* ]]
+  [[ "$selector" == *"Path"* ]]
+  [[ "$selector" == *"Status"* ]]
+  [[ "$selector" == *"hotfix-db"* ]]
+  [[ "$selector" == *"$wt_dir"* ]]
+  [[ "$selector" == *"1↑"* ]]
+  [[ "$selector" == *"*"* ]]
+  [[ "$selector" == *"Switch to [#]:"* ]]
 }
 
 @test "gk wt co selects a displayed index directly without reading stdin" {
@@ -241,9 +278,10 @@ teardown() {
   assert_success
   [ "$(cd "$(cat "$stdout")" && pwd -P)" = "$(cd "$wt_dir" && pwd -P)" ]
   [[ "$(cat "$err_file")" != *"Switch to [#]"* ]]
+  [[ "$(cat "$err_file")" != *"Status"* ]]
 }
 
-@test "gk wt co command substitution keeps a malformed project-store warning on stderr" {
+@test "gk wt co fails for a malformed project store" {
   bash "$GK" wt nb hotfix-db >/dev/null 2>&1
 
   mkdir -p "$HOME/.gk"
@@ -254,12 +292,11 @@ teardown() {
   err_file="$BATS_TEST_TMPDIR/stderr"
 
   run bash -c 'result="$(bash "$1" wt co 1 2> "$2")"; status=$?; printf "%s" "$result"; exit "$status"' _ "$GK" "$err_file"
-  assert_success
-  assert_equal "$output" "$(cd "$wt_dir" && pwd -P)"
-  [[ "$(cat "$err_file")" == *"Ignoring malformed project store: $HOME/.gk/projects.jsonc"* ]]
+  assert_failure
+  [[ "$(cat "$err_file")" == *"Invalid project store"* ]]
 }
 
-@test "gk wt co command substitution keeps a non-object project-store warning on stderr" {
+@test "gk wt co fails for a non-object project store" {
   bash "$GK" wt nb hotfix-db >/dev/null 2>&1
 
   mkdir -p "$HOME/.gk"
@@ -270,9 +307,8 @@ teardown() {
   err_file="$BATS_TEST_TMPDIR/stderr"
 
   run bash -c 'result="$(bash "$1" wt co 1 2> "$2")"; status=$?; printf "%s" "$result"; exit "$status"' _ "$GK" "$err_file"
-  assert_success
-  assert_equal "$output" "$(cd "$wt_dir" && pwd -P)"
-  [[ "$(cat "$err_file")" == *"Ignoring malformed project store: $HOME/.gk/projects.jsonc"* ]]
+  assert_failure
+  [[ "$(cat "$err_file")" == *"Invalid project store"* ]]
 }
 
 @test "gk wt co with no other worktrees shows message" {
@@ -535,7 +571,7 @@ EOF
   [ -f "$wt_dir/.env.prod" ]
 }
 
-@test "gk wt nf merges worktree_copy config with .worktreeinclude" {
+@test "gk wt nf uses .worktreeinclude instead of configured worktree_copy" {
   rm -f "$REPO_DIR/.gitkiss"
   cat > "$REPO_DIR/.gitkiss.jsonc" <<'EOF'
 { "main_branch": "main", "develop_branch": "", "staging_branch": "",
@@ -551,17 +587,18 @@ EOF
   echo "from-include" > "$REPO_DIR/local.conf"
   echo 'local.conf' > "$REPO_DIR/.worktreeinclude"
 
-  run bash "$GK" wt nf merged
+  DEBUG=1 run bash "$GK" wt nf include-wins
   assert_success
-  assert_output --partial "Copied 2 item(s)"
+  assert_output --partial "Copied 1 item(s)"
+  assert_output --partial ".worktreeinclude present; configured worktree_copy suppressed"
 
   local wt_dir
-  wt_dir="$(dirname "$REPO_DIR")/$(basename "$REPO_DIR")--merged"
-  [ -f "$wt_dir/.env" ]
+  wt_dir="$(dirname "$REPO_DIR")/$(basename "$REPO_DIR")--include-wins"
+  [ ! -f "$wt_dir/.env" ]
   [ -f "$wt_dir/local.conf" ]
 }
 
-@test "gk wt nf copies a file in both worktree_copy and .worktreeinclude only once" {
+@test "an empty or comment-only .worktreeinclude suppresses configured worktree_copy" {
   rm -f "$REPO_DIR/.gitkiss"
   cat > "$REPO_DIR/.gitkiss.jsonc" <<'EOF'
 { "main_branch": "main", "develop_branch": "", "staging_branch": "",
@@ -574,15 +611,98 @@ EOF
   git push origin main >/dev/null 2>&1
 
   echo "v=1" > "$REPO_DIR/.env"
-  echo '.env' > "$REPO_DIR/.worktreeinclude"
+  printf '\n# intentionally empty\n\n' > "$REPO_DIR/.worktreeinclude"
 
-  run bash "$GK" wt nf deduped
+  run bash "$GK" wt nf empty-include
   assert_success
-  assert_output --partial "Copied 1 item(s)"
+  refute_output --partial "Copied"
 
   local wt_dir
-  wt_dir="$(dirname "$REPO_DIR")/$(basename "$REPO_DIR")--deduped"
-  [ -f "$wt_dir/.env" ]
+  wt_dir="$(dirname "$REPO_DIR")/$(basename "$REPO_DIR")--empty-include"
+  [ ! -f "$wt_dir/.env" ]
+}
+
+@test "linked-worktree commands use the canonical main-worktree include file" {
+  echo "main-include" > "$REPO_DIR/main-include.env"
+  echo 'main-include.env' > "$REPO_DIR/.worktreeinclude"
+  git worktree add "$(dirname "$REPO_DIR")/$(basename "$REPO_DIR")--source" -b source main >/dev/null 2>&1
+  local source_wt target_wt
+  source_wt="$(dirname "$REPO_DIR")/$(basename "$REPO_DIR")--source"
+  echo 'missing-in-linked-worktree.env' > "$source_wt/.worktreeinclude"
+
+  run bash -c 'cd "$1" && bash "$2" wt nb target' _ "$source_wt" "$GK"
+  assert_success
+  target_wt="$(dirname "$REPO_DIR")/$(basename "$REPO_DIR")--target"
+  [ -f "$target_wt/main-include.env" ]
+}
+
+@test "gk wt nf copies a literal path containing spaces" {
+  echo "space-safe" > "$REPO_DIR/local settings.env"
+  echo 'local settings.env' > "$REPO_DIR/.worktreeinclude"
+
+  run bash "$GK" wt nf spaced
+  assert_success
+  local wt_dir
+  wt_dir="$(dirname "$REPO_DIR")/$(basename "$REPO_DIR")--spaced"
+  [ -f "$wt_dir/local settings.env" ]
+  assert_equal "$(cat "$wt_dir/local settings.env")" "space-safe"
+}
+
+@test "gk wt nf rejects absolute and traversal copy patterns" {
+  local pattern name
+  local -a patterns=('/tmp/not-allowed' '../not-allowed' 'nested/../not-allowed')
+  local -a names=(unsafe-absolute unsafe-parent unsafe-nested)
+  local index
+  for index in "${!patterns[@]}"; do
+    pattern="${patterns[$index]}"
+    name="${names[$index]}"
+    printf '%s\n' "$pattern" > "$REPO_DIR/.worktreeinclude"
+    run bash "$GK" wt nf "$name"
+    assert_failure
+    assert_output --partial "Unsafe worktree copy pattern"
+    refute_output --partial "Fetching latest"
+    ! git show-ref --verify --quiet "refs/heads/feature/$name"
+    [ ! -d "$(dirname "$REPO_DIR")/$(basename "$REPO_DIR")--$name" ]
+  done
+}
+
+@test "gk wt nf refuses symlink copy sources" {
+  ln -s "$BATS_TEST_TMPDIR" "$REPO_DIR/outside-link"
+  echo 'outside-link' > "$REPO_DIR/.worktreeinclude"
+
+  run bash "$GK" wt nf symlinked
+  assert_failure
+  assert_output --partial "refuses symlinks"
+  ! git show-ref --verify --quiet refs/heads/feature/symlinked
+  [ ! -d "$(dirname "$REPO_DIR")/$(basename "$REPO_DIR")--symlinked" ]
+}
+
+@test "gk wt nf refuses nested symlinks before creating a worktree" {
+  mkdir -p "$REPO_DIR/config/local"
+  ln -s "$BATS_TEST_TMPDIR" "$REPO_DIR/config/local/outside-link"
+  echo 'config' > "$REPO_DIR/.worktreeinclude"
+
+  run bash "$GK" wt nf nested-symlinked
+  assert_failure
+  assert_output --partial "refuses symlinks"
+  ! git show-ref --verify --quiet refs/heads/feature/nested-symlinked
+  [ ! -d "$(dirname "$REPO_DIR")/$(basename "$REPO_DIR")--nested-symlinked" ]
+}
+
+@test "gk wt clean reports a locked worktree removal failure" {
+  bash "$GK" wt nb locked-clean >/dev/null 2>&1
+  local wt_dir branch
+  wt_dir="$(dirname "$REPO_DIR")/$(basename "$REPO_DIR")--locked-clean"
+  branch="locked-clean"
+  git worktree lock --reason "test lock" "$wt_dir"
+
+  run bash "$GK" 'wt' 'clean!'
+  assert_failure
+  assert_output --partial "Could not remove $branch"
+  refute_output --partial "Removed $branch"
+  [ -d "$wt_dir" ]
+  git show-ref --verify --quiet "refs/heads/$branch"
+  git worktree unlock "$wt_dir"
 }
 
 @test "gk wt nb copies files listed in .worktreeinclude" {

@@ -66,3 +66,19 @@ teardown() {
   # Should have develop.txt since it branched from develop
   [ -f "$REPO_DIR/develop.txt" ]
 }
+
+@test "gk nf rejects an invalid generated branch before checkout" {
+  run bash "$GK" nf 'bad..branch'
+  assert_failure
+  assert_output --partial "Invalid generated feature branch"
+  run git branch --show-current
+  assert_output "main"
+
+  write_legacy_config "$REPO_DIR/.gitkiss" INITIALS='bad..initials'
+  git add .gitkiss && git commit -m "invalid initials" >/dev/null 2>&1
+  run bash "$GK" nf valid-name
+  assert_failure
+  assert_output --partial "Invalid generated feature branch"
+  run git branch --show-current
+  assert_output "main"
+}

@@ -1,5 +1,5 @@
 // git-kiss team config - commit this to share with your team.
-// Cascading: ~/.git-kiss.jsonc (global) -> .gitkiss.jsonc (team) -> .gitkiss.local.jsonc (personal).
+// Cascading: ~/.gk/.gitkiss.jsonc (global) -> ~/.gk/projects.jsonc (project) -> .gitkiss.jsonc (team) -> .gitkiss.local.jsonc (personal).
 // Docs: https://github.com/mjeffrey18/git-kiss
 //
 // Comments must be on their own line (// only). Run `gk init` to generate this.
