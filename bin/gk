@@ -207,7 +207,12 @@ parse_legacy_config() {
       if [[ "$key" != "WORKTREE_COPY" && ( "$value" == *' '* || "$value" == *$'\t'* ) ]]; then
         die "Unsafe or unsupported legacy configuration in $legacy"
       fi
-    elif [[ "$value" == *';'* || "$value" == *'`'* || "$value" == *'$'* || "$value" == *')'* || "$value" == *'&'* || "$value" == *'|'* || "$value" == *'<'* || "$value" == *'>'* || ( "$key" != "WORKTREE_COPY" && ( "$value" == *' '* || "$value" == *$'\t'* ) ) ]]; then
+    elif [[ "$value" =~ ^\'[^\']*\'$ ]]; then
+      value="${value:1:${#value}-2}"
+      if [[ "$key" != "WORKTREE_COPY" && ( "$value" == *' '* || "$value" == *$'\t'* ) ]]; then
+        die "Unsafe or unsupported legacy configuration in $legacy"
+      fi
+    elif [[ "$value" == *"'"* || "$value" == *'"'* || "$value" == *';'* || "$value" == *'`'* || "$value" == *'$'* || "$value" == *')'* || "$value" == *'&'* || "$value" == *'|'* || "$value" == *'<'* || "$value" == *'>'* || ( "$key" != "WORKTREE_COPY" && ( "$value" == *' '* || "$value" == *$'\t'* ) ) ]]; then
       die "Unsafe or unsupported legacy configuration in $legacy"
     fi
     case "$key" in
@@ -1245,6 +1250,54 @@ main_worktree_path() {
   git worktree list --porcelain | head -1 | sed 's/^worktree //'
 }
 
+remove_worktree_checked() {
+  local main_path="$1" rm_path="$2" remove_status metadata_status=0 worktrees line
+  local registration_remains=false filesystem_remains=false
+
+  if git -C "$main_path" worktree remove "$rm_path" --force; then
+    remove_status=0
+  else
+    remove_status=$?
+  fi
+
+  if worktrees="$(git -C "$main_path" worktree list --porcelain)"; then
+    while IFS= read -r line; do
+      if [[ "$line" == "worktree $rm_path" ]]; then
+        registration_remains=true
+        break
+      fi
+    done <<< "$worktrees"
+  else
+    metadata_status=$?
+  fi
+
+  if [[ -e "$rm_path" || -L "$rm_path" ]]; then
+    filesystem_remains=true
+  fi
+
+  if [[ "$metadata_status" -ne 0 ]]; then
+    error "Could not verify worktree removal at $rm_path: metadata check failed (exit $metadata_status)."
+  elif [[ "$registration_remains" == true && "$filesystem_remains" == true ]]; then
+    error "Worktree removal incomplete: registration and filesystem entry remain at $rm_path."
+  elif [[ "$registration_remains" == true ]]; then
+    error "Worktree removal incomplete: registration remains for $rm_path, but the filesystem entry is absent."
+  elif [[ "$filesystem_remains" == true ]]; then
+    error "Worktree removal incomplete: registration is absent, but filesystem entry remains at $rm_path."
+  elif [[ "$remove_status" -ne 0 ]]; then
+    error "Git reported worktree removal failure at $rm_path (exit $remove_status), but registration and filesystem entry are absent."
+  else
+    return 0
+  fi
+
+  if [[ "$remove_status" -ne 0 ]]; then
+    return "$remove_status"
+  elif [[ "$metadata_status" -ne 0 ]]; then
+    return "$metadata_status"
+  else
+    return 1
+  fi
+}
+
 worktree_dir_name() {
   local name="$1"
   local main_path
@@ -1309,12 +1362,13 @@ preflight_worktree_copy() {
   # shellcheck disable=SC2064  # expand the saved shopt state now, at trap-set time, on purpose
   trap "eval $(printf '%q' "$saved_nullglob"); eval $(printf '%q' "$saved_dotglob"); trap - RETURN" RETURN
 
-  local pattern src matched _done=$'\n' src_parent nested_link
+  local pattern src rel_src matched _done=$'\n' src_parent nested_link
   for pattern in "${patterns[@]}"; do
     [[ -z "$pattern" ]] && continue
     validate_worktree_pattern "$pattern" "$([[ -f "$include_file" ]] && echo .worktreeinclude || echo worktree_copy)"
     matched=0
-    while IFS= read -r src; do
+    while IFS= read -r rel_src; do
+      src="$main_path/$rel_src"
       [[ -e "$src" ]] || continue
       [[ ! -L "$src" ]] || die "Worktree copy refuses symlinks: $src"
       src_parent="$(cd -P "$(dirname "$src")" && pwd)" || die "Could not resolve worktree copy source: $src"
@@ -1327,7 +1381,11 @@ preflight_worktree_copy() {
       case "$_done" in *$'\n'"$src"$'\n'*) continue ;; esac
       _done="${_done}${src}"$'\n'
       WORKTREE_COPY_SOURCES+=("$src")
-    done < <(compgen -G "$main_path/$pattern" || true)
+    done < <(
+      if cd "$main_path"; then
+        compgen -G "$pattern" || true
+      fi
+    )
     if [[ "$matched" -eq 0 ]]; then
       debug "worktree copy: no match for '$pattern'"
     fi
@@ -1642,15 +1700,19 @@ cmd_wt_rm() {
   fi
 
   info "Removing worktree at $rm_path..."
-  git worktree remove "$rm_path" --force
+  remove_worktree_checked "$main_path" "$rm_path"
 
   # Delete branch if it was merged
   local base
   base="$(base_branch)"
   if [[ "$rm_branch" != "(detached)" && "$rm_branch" != "???" ]]; then
-    if git branch --merged "$base" --format='%(refname:short)' | grep -qxF "$rm_branch"; then
-      git branch -d "$rm_branch" 2>/dev/null || true
-      success "Worktree removed. Branch $rm_branch deleted (was merged)."
+    if git -C "$main_path" branch --merged "$base" --format='%(refname:short)' | grep -qxF "$rm_branch"; then
+      if git -C "$main_path" branch -d "$rm_branch"; then
+        success "Worktree removed. Branch $rm_branch deleted (was merged)."
+      else
+        error "Worktree removed, but could not delete merged branch $rm_branch."
+        return 1
+      fi
     else
       success "Worktree removed. Branch $rm_branch kept (not yet merged)."
     fi

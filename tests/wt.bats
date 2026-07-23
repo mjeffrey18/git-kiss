@@ -6,6 +6,9 @@ setup() {
 }
 
 teardown() {
+  if [[ -n "${LOCKED_DIR_TO_RESTORE:-}" ]]; then
+    chmod u+w "$LOCKED_DIR_TO_RESTORE" 2>/dev/null || true
+  fi
   teardown_test_repo
 }
 
@@ -126,7 +129,85 @@ teardown() {
 
   local wt_dir
   wt_dir="$(dirname "$REPO_DIR")/$(basename "$REPO_DIR")--hotfix-db"
-  [ ! -d "$wt_dir" ]
+  [ ! -e "$wt_dir" ]
+  [ ! -L "$wt_dir" ]
+
+  run git worktree list --porcelain
+  assert_success
+  refute_output --partial "worktree $wt_dir"
+}
+
+@test "gk wt rm works when invoked from the selected worktree" {
+  bash "$GK" wt nb hotfix-db >/dev/null 2>&1
+
+  local wt_dir
+  wt_dir="$(dirname "$REPO_DIR")/$(basename "$REPO_DIR")--hotfix-db"
+
+  run bash -c 'cd "$1" && bash "$2" wt rm 1' _ "$wt_dir" "$GK"
+  assert_success
+  assert_output --partial "Worktree removed"
+  refute_output --partial "Unable to read current working directory"
+  assert_output --partial "Branch hotfix-db deleted"
+  [ ! -e "$wt_dir" ]
+  [ ! -L "$wt_dir" ]
+
+  run git -C "$REPO_DIR" worktree list --porcelain
+  assert_success
+  refute_output --partial "worktree $wt_dir"
+}
+
+@test "gk wt rm reports partial removal when a nested directory is undeletable" {
+  bash "$GK" wt nb hotfix-db >/dev/null 2>&1
+
+  local wt_dir locked_dir
+  wt_dir="$(dirname "$REPO_DIR")/$(basename "$REPO_DIR")--hotfix-db"
+  locked_dir="$wt_dir/locked"
+  mkdir -p "$locked_dir"
+  echo "locked" > "$locked_dir/file"
+  LOCKED_DIR_TO_RESTORE="$locked_dir"
+  chmod u-w "$locked_dir"
+
+  run bash "$GK" wt 'rm!' 1
+  chmod u+w "$locked_dir"
+  LOCKED_DIR_TO_RESTORE=""
+
+  assert_failure
+  assert_output --partial "registration is absent, but filesystem entry remains"
+  refute_output --partial "Worktree removed"
+  [ -e "$wt_dir" ] || [ -L "$wt_dir" ]
+
+  run git -C "$REPO_DIR" worktree list --porcelain
+  assert_success
+  refute_output --partial "worktree $wt_dir"
+}
+
+@test "gk wt rm catches a recreated worktree path after Git removal" {
+  bash "$GK" wt nb hotfix-db >/dev/null 2>&1
+
+  local wt_dir fake_bin real_git
+  wt_dir="$(dirname "$REPO_DIR")/$(basename "$REPO_DIR")--hotfix-db"
+  fake_bin="$BATS_TEST_TMPDIR/fake-bin"
+  real_git="$(command -v git)"
+  mkdir -p "$fake_bin"
+  printf '%s\n' '#!/usr/bin/env bash' \
+    'if [[ "$1" == "-C" && "$3" == "worktree" && "$4" == "remove" ]]; then' \
+    '  "$REAL_GIT" "$@"' \
+    '  status=$?' \
+    '  if [[ "$status" -eq 0 ]]; then mkdir -p "$5"; fi' \
+    '  exit "$status"' \
+    'fi' \
+    'exec "$REAL_GIT" "$@"' > "$fake_bin/git"
+  chmod +x "$fake_bin/git"
+
+  run env PATH="$fake_bin:$PATH" REAL_GIT="$real_git" bash "$GK" wt 'rm!' 1
+  assert_failure
+  assert_output --partial "registration is absent, but filesystem entry remains"
+  refute_output --partial "Worktree removed"
+  [ -d "$wt_dir" ]
+
+  run git -C "$REPO_DIR" worktree list --porcelain
+  assert_success
+  refute_output --partial "worktree $wt_dir"
 }
 
 @test "gk wt rm by name removes worktree" {
@@ -646,6 +727,25 @@ EOF
   wt_dir="$(dirname "$REPO_DIR")/$(basename "$REPO_DIR")--spaced"
   [ -f "$wt_dir/local settings.env" ]
   assert_equal "$(cat "$wt_dir/local settings.env")" "space-safe"
+}
+
+@test "gk wt nb treats metacharacters in the repository path literally" {
+  local metachar_repo wt_dir
+  metachar_repo="$BATS_TEST_TMPDIR/repo[1]"
+  mv "$REPO_DIR" "$metachar_repo"
+  export REPO_DIR="$metachar_repo"
+  cd "$REPO_DIR"
+
+  echo "literal-root" > "$REPO_DIR/.env"
+  echo '.env' > "$REPO_DIR/.worktreeinclude"
+
+  run bash "$GK" wt nb metachar-root
+  assert_success
+  assert_output --partial "Copied 1 item(s)"
+
+  wt_dir="$(dirname "$REPO_DIR")/$(basename "$REPO_DIR")--metachar-root"
+  [ -f "$wt_dir/.env" ]
+  assert_equal "$(cat "$wt_dir/.env")" "literal-root"
 }
 
 @test "gk wt nf rejects absolute and traversal copy patterns" {

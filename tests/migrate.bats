@@ -143,6 +143,27 @@ EOF
   assert_output --partial "worktree_copy=.env (repo legacy)"
 }
 
+@test "legacy migration parses safe single-quoted values" {
+  cat > "$REPO_DIR/.gitkiss" <<'EOF'
+MAIN_BRANCH='main'
+DEVELOP_BRANCH=''
+STAGING_BRANCH=''
+FEATURE_PREFIX='quoted/'
+USE_TAGS='false'
+INITIALS='sq'
+WORKTREE_COPY='.env config/local'
+EOF
+  git add .gitkiss && git commit -m "single-quoted legacy" >/dev/null 2>&1
+
+  run bash "$GK" migrate
+  assert_success
+  assert_equal "$(jget "$REPO_DIR/.gitkiss.jsonc" .main_branch)" "main"
+  assert_equal "$(jget "$REPO_DIR/.gitkiss.jsonc" .develop_branch)" ""
+  assert_equal "$(jget "$REPO_DIR/.gitkiss.jsonc" .feature_prefix)" "quoted/"
+  assert_equal "$(jget "$REPO_DIR/.gitkiss.local.jsonc" .initials)" "sq"
+  assert_equal "$(jget "$REPO_DIR/.gitkiss.local.jsonc" '.worktree_copy | join("|")')" ".env|config/local"
+}
+
 @test "legacy config never executes command substitutions and rejects unsupported keys" {
   local marker="$BATS_TEST_TMPDIR/legacy-executed"
   printf 'FEATURE_PREFIX=$(touch %s)\n' "$marker" > "$REPO_DIR/.gitkiss"
