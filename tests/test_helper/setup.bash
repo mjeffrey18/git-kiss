@@ -143,3 +143,22 @@ run_in_pty() {
 jget() {
   grep -v '^[[:space:]]*//' "$1" | jq -r "$2"
 }
+
+# Install a fake `git` on a fresh bin dir that recreates the worktree directory
+# immediately after `git -C <main> worktree remove <path>` succeeds, simulating a
+# concurrent process re-creating the path. Prints the bin dir to prepend to PATH;
+# callers invoke gk with PATH="$(install_recreating_git_shim):$PATH" REAL_GIT=...
+install_recreating_git_shim() {
+  local fake_bin="$BATS_TEST_TMPDIR/fake-bin"
+  mkdir -p "$fake_bin"
+  printf '%s\n' '#!/usr/bin/env bash' \
+    'if [[ "$1" == "-C" && "$3" == "worktree" && "$4" == "remove" ]]; then' \
+    '  "$REAL_GIT" "$@"' \
+    '  status=$?' \
+    '  if [[ "$status" -eq 0 ]]; then mkdir -p "$5"; fi' \
+    '  exit "$status"' \
+    'fi' \
+    'exec "$REAL_GIT" "$@"' > "$fake_bin/git"
+  chmod +x "$fake_bin/git"
+  printf '%s' "$fake_bin"
+}

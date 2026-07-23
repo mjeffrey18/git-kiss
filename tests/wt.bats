@@ -110,11 +110,25 @@ teardown() {
   assert_output --partial "feature/login"
 }
 
-@test "gk wt ls marks current worktree" {
+@test "gk wt ls truncates long branch names before the path column" {
+  local long_branch="feature/this-branch-name-is-deliberately-long-for-the-table"
+  local wt_dir="$BATS_TEST_TMPDIR/repo--long-branch"
+  git worktree add "$wt_dir" -b "$long_branch" main >/dev/null 2>&1
+
   run bash "$GK" wt ls
+  assert_success
+  assert_output --partial "feature/this-branch-name-is..."
+  refute_output --partial "$long_branch"
+}
+
+@test "gk wt ls marks current worktree" {
+  local repo_parent
+  repo_parent="$(cd "$(dirname "$REPO_DIR")" && pwd -P)"
+  run env HOME="$repo_parent" bash "$GK" wt ls
   assert_success
   # Current marker character (●) should be present
   assert_output --partial "●"
+  assert_output --partial "~/repo (current)"
 }
 
 # ─── wt rm ──────────────────────────────────────────────────────────────────
@@ -186,18 +200,8 @@ teardown() {
 
   local wt_dir fake_bin real_git
   wt_dir="$(dirname "$REPO_DIR")/$(basename "$REPO_DIR")--hotfix-db"
-  fake_bin="$BATS_TEST_TMPDIR/fake-bin"
   real_git="$(command -v git)"
-  mkdir -p "$fake_bin"
-  printf '%s\n' '#!/usr/bin/env bash' \
-    'if [[ "$1" == "-C" && "$3" == "worktree" && "$4" == "remove" ]]; then' \
-    '  "$REAL_GIT" "$@"' \
-    '  status=$?' \
-    '  if [[ "$status" -eq 0 ]]; then mkdir -p "$5"; fi' \
-    '  exit "$status"' \
-    'fi' \
-    'exec "$REAL_GIT" "$@"' > "$fake_bin/git"
-  chmod +x "$fake_bin/git"
+  fake_bin="$(install_recreating_git_shim)"
 
   run env PATH="$fake_bin:$PATH" REAL_GIT="$real_git" bash "$GK" wt 'rm!' 1
   assert_failure
@@ -297,6 +301,22 @@ teardown() {
   local wt_dir
   wt_dir="$(dirname "$REPO_DIR")/$(basename "$REPO_DIR")--hotfix-db"
   [ ! -d "$wt_dir" ]
+}
+
+@test "gk wt clean! reports a recreated path as an incomplete removal" {
+  bash "$GK" wt nb hotfix-db >/dev/null 2>&1
+
+  local wt_dir fake_bin real_git
+  wt_dir="$(dirname "$REPO_DIR")/$(basename "$REPO_DIR")--hotfix-db"
+  real_git="$(command -v git)"
+  fake_bin="$(install_recreating_git_shim)"
+
+  run env PATH="$fake_bin:$PATH" REAL_GIT="$real_git" bash "$GK" wt 'clean!'
+  assert_failure
+  assert_output --partial "registration is absent, but filesystem entry remains"
+  assert_output --partial "Could not remove hotfix-db"
+  refute_output --partial "Removed hotfix-db"
+  git show-ref --verify --quiet refs/heads/hotfix-db
 }
 
 # ─── wt co ─────────────────────────────────────────────────────────────────

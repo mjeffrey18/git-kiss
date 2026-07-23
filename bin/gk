@@ -19,20 +19,50 @@ DEFAULT_INITIALS=""
 
 # ─── Config Loading ──────────────────────────────────────────────────────────
 
-MAIN_BRANCH="$DEFAULT_MAIN_BRANCH"
-DEVELOP_BRANCH="$DEFAULT_DEVELOP_BRANCH"
-STAGING_BRANCH="$DEFAULT_STAGING_BRANCH"
-FEATURE_PREFIX="$DEFAULT_FEATURE_PREFIX"
-USE_TAGS="$DEFAULT_USE_TAGS"
-INITIALS="$DEFAULT_INITIALS"
-WORKTREE_COPY=()
-MAIN_BRANCH_SOURCE="built-in defaults"
-DEVELOP_BRANCH_SOURCE="built-in defaults"
-STAGING_BRANCH_SOURCE="built-in defaults"
-FEATURE_PREFIX_SOURCE="built-in defaults"
-USE_TAGS_SOURCE="built-in defaults"
-INITIALS_SOURCE="built-in defaults"
-WORKTREE_COPY_SOURCE="built-in defaults"
+reset_config() {
+  MAIN_BRANCH="$DEFAULT_MAIN_BRANCH"
+  DEVELOP_BRANCH="$DEFAULT_DEVELOP_BRANCH"
+  STAGING_BRANCH="$DEFAULT_STAGING_BRANCH"
+  FEATURE_PREFIX="$DEFAULT_FEATURE_PREFIX"
+  USE_TAGS="$DEFAULT_USE_TAGS"
+  INITIALS="$DEFAULT_INITIALS"
+  WORKTREE_COPY=()
+  MAIN_BRANCH_SOURCE="built-in defaults"
+  DEVELOP_BRANCH_SOURCE="built-in defaults"
+  STAGING_BRANCH_SOURCE="built-in defaults"
+  FEATURE_PREFIX_SOURCE="built-in defaults"
+  USE_TAGS_SOURCE="built-in defaults"
+  INITIALS_SOURCE="built-in defaults"
+  WORKTREE_COPY_SOURCE="built-in defaults"
+}
+
+# Initialise config state at startup. load_config re-invokes reset_config before
+# each (re)load, so both paths seed identical state from this single definition.
+#
+# KEEP THIS CALL HERE - at top level, immediately after reset_config is defined
+# and before any other code runs. It has been moved a few times and each move
+# reintroduces the same bug: under `set -u`, any code path that reads a config
+# var (or its _SOURCE) before load_config has run - e.g. an early --help, a
+# version check, or a die() during argument parsing - dies on an unbound
+# variable unless these defaults are already seeded at load time. Do not defer
+# it into load_config or a main()/dispatch function.
+reset_config
+
+# Set a single scalar config var from its canonical lowercase key. Callers pass
+# lowercase keys (the legacy loader lowercases its UPPER_CASE keys first), so the
+# case list is the single canonical registry of supported scalar keys.
+set_config_value() {
+  local key="$1" value="$2" source="$3"
+  case "$key" in
+    main_branch)    MAIN_BRANCH="$value"; MAIN_BRANCH_SOURCE="$source" ;;
+    develop_branch) DEVELOP_BRANCH="$value"; DEVELOP_BRANCH_SOURCE="$source" ;;
+    staging_branch) STAGING_BRANCH="$value"; STAGING_BRANCH_SOURCE="$source" ;;
+    feature_prefix) FEATURE_PREFIX="$value"; FEATURE_PREFIX_SOURCE="$source" ;;
+    use_tags)       USE_TAGS="$value"; USE_TAGS_SOURCE="$source" ;;
+    initials)       INITIALS="$value"; INITIALS_SOURCE="$source" ;;
+    *) die "Unsupported configuration key: $key" ;;
+  esac
+}
 
 ensure_private_gk_dir() {
   local gk_dir="$HOME/.gk"
@@ -98,13 +128,7 @@ load_config() {
   main_root="$(canonical_main_worktree_path 2>/dev/null || echo "")"
 
   # Reset so a post-onboarding reload cannot retain values from a prior pass.
-  MAIN_BRANCH="$DEFAULT_MAIN_BRANCH"; DEVELOP_BRANCH="$DEFAULT_DEVELOP_BRANCH"
-  STAGING_BRANCH="$DEFAULT_STAGING_BRANCH"; FEATURE_PREFIX="$DEFAULT_FEATURE_PREFIX"
-  USE_TAGS="$DEFAULT_USE_TAGS"; INITIALS="$DEFAULT_INITIALS"; WORKTREE_COPY=()
-  MAIN_BRANCH_SOURCE="built-in defaults"; DEVELOP_BRANCH_SOURCE="built-in defaults"
-  STAGING_BRANCH_SOURCE="built-in defaults"; FEATURE_PREFIX_SOURCE="built-in defaults"
-  USE_TAGS_SOURCE="built-in defaults"; INITIALS_SOURCE="built-in defaults"
-  WORKTREE_COPY_SOURCE="built-in defaults"
+  reset_config
 
   # -- Global layer --
   debug "config layer global: $([[ -f "$global_jsonc" ]] && echo found || echo missing) ($global_jsonc)"
@@ -183,11 +207,7 @@ apply_project_layer() {
   if ! printf '%s' "$entry" | jq -e 'type == "object"' >/dev/null 2>&1; then
     die "Invalid project entry for $key in $store"
   fi
-  local tmp
-  tmp="$(mktemp "${TMPDIR:-/tmp}/gk-project.XXXXXX")" || { warn "Could not read project store: $store" >&2; return 0; }
-  printf '%s\n' "$entry" > "$tmp"
-  apply_jsonc_layer "$tmp" "global project" "$store (key: $key)"
-  rm -f "$tmp"
+  apply_config_object "$entry" "global project" "$store (key: $key)"
 }
 
 # Parse the deliberately small legacy assignment format without executing it.
@@ -215,15 +235,14 @@ parse_legacy_config() {
     elif [[ "$value" == *"'"* || "$value" == *'"'* || "$value" == *';'* || "$value" == *'`'* || "$value" == *'$'* || "$value" == *')'* || "$value" == *'&'* || "$value" == *'|'* || "$value" == *'<'* || "$value" == *'>'* || ( "$key" != "WORKTREE_COPY" && ( "$value" == *' '* || "$value" == *$'\t'* ) ) ]]; then
       die "Unsafe or unsupported legacy configuration in $legacy"
     fi
-    case "$key" in
-      MAIN_BRANCH) MAIN_BRANCH="$value"; MAIN_BRANCH_SOURCE="$logical_source" ;;
-      DEVELOP_BRANCH) DEVELOP_BRANCH="$value"; DEVELOP_BRANCH_SOURCE="$logical_source" ;;
-      STAGING_BRANCH) STAGING_BRANCH="$value"; STAGING_BRANCH_SOURCE="$logical_source" ;;
-      FEATURE_PREFIX) FEATURE_PREFIX="$value"; FEATURE_PREFIX_SOURCE="$logical_source" ;;
-      USE_TAGS) USE_TAGS="$value"; USE_TAGS_SOURCE="$logical_source" ;;
-      INITIALS) INITIALS="$value"; INITIALS_SOURCE="$logical_source" ;;
-      WORKTREE_COPY) IFS=$' \t' read -r -a WORKTREE_COPY <<< "$value"; WORKTREE_COPY_SOURCE="$logical_source" ;;
-    esac
+    if [[ "$key" == "WORKTREE_COPY" ]]; then
+      IFS=$' \t' read -r -a WORKTREE_COPY <<< "$value"
+      WORKTREE_COPY_SOURCE="$logical_source"
+    else
+      # Normalise the legacy UPPER_CASE key to the canonical lowercase spelling
+      # (bash 3.2 has no ${key,,}, so translate with tr).
+      set_config_value "$(printf '%s' "$key" | tr '[:upper:]' '[:lower:]')" "$value" "$logical_source"
+    fi
   done < "$legacy"
   validate_config_values "$legacy"
 }
@@ -411,6 +430,8 @@ RED=$'\033[0;31m'
 GREEN=$'\033[0;32m'
 YELLOW=$'\033[0;33m'
 BLUE=$'\033[0;34m'
+MAGENTA=$'\033[0;35m'
+CYAN=$'\033[0;36m'
 BOLD=$'\033[1m'
 NC=$'\033[0m' # No Color
 
@@ -518,6 +539,27 @@ run_merge() {
   fi
 }
 
+pull_branch_from_origin() {
+  local branch="$1" message="${2:-}"
+  [[ -n "$message" ]] && info "$message"
+  run_rebase "Pull --rebase of $branch" pull origin "$branch" --rebase
+}
+
+checkout_and_pull_branch() {
+  local branch="$1"
+  local message="${2:-Pulling latest $branch...}"
+  info "$message"
+  git checkout "$branch"
+  pull_branch_from_origin "$branch"
+}
+
+rebase_current_onto() {
+  local target="$1" current
+  current="$(current_branch)"
+  info "Rebasing ${current:-current branch} onto $target..."
+  run_rebase "Rebase of ${current:-current branch} onto $target" rebase "$target"
+}
+
 JSONC_HINT="'jq' is required for git-kiss config. Install it:
     macOS:  brew install jq
     Linux:  apt install jq  (or your package manager)
@@ -528,18 +570,11 @@ strip_jsonc_comments() {
   sed 's|^[[:space:]]*//.*$||' "$1"
 }
 
-apply_jsonc_layer() {
-  local f="$1" logical_source="${2:-$1}" display_source="${3:-$1}"
-  [[ -f "$f" ]] || return 0
-  require_command jq "$JSONC_HINT"
-  debug "config layer $logical_source: loading $display_source"
-
-  local stripped
-  stripped="$(strip_jsonc_comments "$f")"
-
+apply_config_object() {
+  local object="$1" logical_source="$2" display_source="$3"
   # A present layer is authoritative: malformed types must never make a
   # mutating command fall back to defaults or an earlier layer.
-  if ! printf '%s' "$stripped" | jq -e '
+  if ! printf '%s' "$object" | jq -e '
       type == "object"
       and ([keys[] | select(. != "main_branch" and . != "develop_branch" and . != "staging_branch" and . != "feature_prefix" and . != "use_tags" and . != "initials" and . != "worktree_copy")] | length == 0)
       and ((has("main_branch") | not) or (.main_branch | type == "string"))
@@ -553,37 +588,41 @@ apply_jsonc_layer() {
     die "Invalid configuration: $display_source (expected a supported JSON object with valid value types)"
   fi
 
+  # Read tab-separated key/value pairs, one record per line. jq's @tsv escapes
+  # any tab, newline or carriage return inside a value, so such a value stays on
+  # a single line and cannot split into a spurious extra key that would trip
+  # set_config_value's unknown-key guard.
   local pairs
-  if ! pairs="$(printf '%s' "$stripped" | jq -r '
-        to_entries[]
-        | select(.key=="main_branch" or .key=="develop_branch" or .key=="staging_branch"
-                 or .key=="feature_prefix" or .key=="use_tags" or .key=="initials")
-        | "\(.key)\t\(.value)"' 2>/dev/null)"; then
+  if ! pairs="$(printf '%s' "$object" | jq -r 'to_entries[] | select(.key=="main_branch" or .key=="develop_branch" or .key=="staging_branch" or .key=="feature_prefix" or .key=="use_tags" or .key=="initials") | [.key, .value] | @tsv')"; then
     die "Invalid configuration: $display_source (invalid JSON; comments must be on their own line)"
   fi
 
   local _k _v
   while IFS=$'\t' read -r _k _v; do
-    if [[ -z "$_k" ]]; then continue; fi
-    case "$_k" in
-      main_branch)    MAIN_BRANCH="$_v"; MAIN_BRANCH_SOURCE="$logical_source" ;;
-      develop_branch) DEVELOP_BRANCH="$_v"; DEVELOP_BRANCH_SOURCE="$logical_source" ;;
-      staging_branch) STAGING_BRANCH="$_v"; STAGING_BRANCH_SOURCE="$logical_source" ;;
-      feature_prefix) FEATURE_PREFIX="$_v"; FEATURE_PREFIX_SOURCE="$logical_source" ;;
-      use_tags)       USE_TAGS="$_v"; USE_TAGS_SOURCE="$logical_source" ;;
-      initials)       INITIALS="$_v"; INITIALS_SOURCE="$logical_source" ;;
-    esac
+    [[ -z "$_k" ]] && continue
+    set_config_value "$_k" "$_v" "$logical_source"
   done <<< "$pairs"
 
   # worktree_copy: only reset when the key is present (present [] overrides; absent leaves prior).
-  if printf '%s' "$stripped" | jq -e 'has("worktree_copy")' >/dev/null 2>&1; then
+  if printf '%s' "$object" | jq -e 'has("worktree_copy")' >/dev/null 2>&1; then
     WORKTREE_COPY=()
     local _e
-    while IFS= read -r _e; do WORKTREE_COPY+=("$_e"); done < <(printf '%s' "$stripped" | jq -r '.worktree_copy[]?')
+    while IFS= read -r _e; do WORKTREE_COPY+=("$_e"); done < <(printf '%s' "$object" | jq -r '.worktree_copy[]?')
     WORKTREE_COPY_SOURCE="$logical_source"
   fi
-  debug "config layer $logical_source: contributed $(printf '%s' "$stripped" | jq -c '.')"
+  debug "config layer $logical_source: contributed $(printf '%s' "$object" | jq -c '.')"
   validate_config_values "$display_source"
+}
+
+apply_jsonc_layer() {
+  local f="$1" logical_source="${2:-$1}" display_source="${3:-$1}"
+  [[ -f "$f" ]] || return 0
+  require_command jq "$JSONC_HINT"
+  debug "config layer $logical_source: loading $display_source"
+
+  local stripped
+  stripped="$(strip_jsonc_comments "$f")"
+  apply_config_object "$stripped" "$logical_source" "$display_source"
 }
 
 validate_branch_name() {
@@ -716,9 +755,7 @@ cmd_nf() {
   local base
   base="$(base_branch)"
 
-  info "Checking out $base and pulling latest..."
-  git checkout "$base"
-  run_rebase "Pull --rebase of $base" pull origin "$base" --rebase
+  checkout_and_pull_branch "$base" "Checking out $base and pulling latest..."
 
   info "Creating branch $branch_name..."
   git checkout -b "$branch_name"
@@ -740,9 +777,7 @@ cmd_ff() {
   local base
   base="$(base_branch)"
 
-  info "Pulling latest $base..."
-  git checkout "$base"
-  run_rebase "Pull --rebase of $base" pull origin "$base" --rebase
+  checkout_and_pull_branch "$base"
 
   git checkout "$branch"
 
@@ -842,6 +877,17 @@ cmd_pf() {
 }
 
 cmd_pr() {
+  local subcmd="${1:-}"
+
+  case "$subcmd" in
+    ls|list)  cmd_pr_ls ;;
+    help|--help|-h) cmd_pr_help ;;
+    "")        die "Usage: gk pr <title> [gh flags...]  |  gk pr ls  |  gk pr help" ;;
+    *)         cmd_pr_create "$@" ;;
+  esac
+}
+
+cmd_pr_create() {
   require_command "gh" "Install the GitHub CLI: https://cli.github.com"
   require_feature_branch
 
@@ -858,6 +904,176 @@ cmd_pr() {
   gh pr create --base "$base" --title "$title" --fill "$@"
 }
 
+cmd_pr_ls() {
+  require_command "gh" "Install the GitHub CLI: https://cli.github.com"
+  require_command "jq" "Install jq: https://jqlang.github.io/jq/download/"
+
+  # Collect all local branches
+  local -a all_branches=()
+  local branch
+
+  while IFS= read -r branch; do
+    [[ -n "$branch" ]] && all_branches+=("$branch")
+  done < <(git branch --format='%(refname:short)' 2>/dev/null)
+
+  if [[ ${#all_branches[@]} -eq 0 ]]; then
+    info "No branches found."
+    return
+  fi
+
+  # Fetch open PRs with lightweight fields. Check details are fetched only for
+  # PRs that match a local branch, so large repositories stay responsive.
+  local pr_json
+  if ! pr_json="$(gh pr list --json number,title,headRefName,isDraft,createdAt,url --state open --limit 1000 2>/dev/null)"; then
+    die "Failed to fetch pull requests. Is this a GitHub repository?"
+  fi
+  if ! printf '%s' "$pr_json" | jq -e 'type == "array"' >/dev/null; then
+    die "Failed to parse pull requests returned by GitHub CLI."
+  fi
+
+  parse_worktrees
+  local current_wt
+  current_wt="$(git rev-parse --show-toplevel)"
+
+  # Build a lookup of headRefName -> PR details (one match per branch).
+  # Store as parallel arrays for clean iteration
+  local -a pr_nums=()
+  local -a pr_titles=()
+  local -a pr_created_ats=()
+  local -a pr_urls=()
+  local -a pr_statuses=()
+  local -a pr_matched=()
+
+  for branch in "${all_branches[@]}"; do
+    local pr_num pr_title pr_created_at pr_url pr_status checks_json
+    if pr_num="$(printf '%s' "$pr_json" | jq -er --arg branch "$branch" '
+      first(.[] | select(.headRefName == $branch)) | .number
+    ')"; then
+      pr_title="$(printf '%s' "$pr_json" | jq -er --arg branch "$branch" '
+        first(.[] | select(.headRefName == $branch)) | .title
+      ')" || die "Failed to parse pull requests returned by GitHub CLI."
+      pr_created_at="$(printf '%s' "$pr_json" | jq -er --arg branch "$branch" '
+        first(.[] | select(.headRefName == $branch)) | .createdAt
+      ')" || die "Failed to parse pull requests returned by GitHub CLI."
+      pr_url="$(printf '%s' "$pr_json" | jq -er --arg branch "$branch" '
+        first(.[] | select(.headRefName == $branch)) | .url
+      ')" || die "Failed to parse pull requests returned by GitHub CLI."
+      pr_status="$(printf '%s' "$pr_json" | jq -er --arg branch "$branch" '
+        first(.[] | select(.headRefName == $branch)) |
+        if .isDraft then "draft"
+        else "open"
+        end
+      ')" || die "Failed to parse pull requests returned by GitHub CLI."
+      if [[ "$pr_status" == "open" ]]; then
+        checks_json="$(gh pr checks "$pr_num" --required --json bucket 2>/dev/null || true)"
+        if [[ -n "$checks_json" ]] && printf '%s' "$checks_json" | jq -e 'type == "array"' >/dev/null 2>&1 &&
+           printf '%s' "$checks_json" | jq -e 'any(.[]; .bucket == "fail" or .bucket == "cancel")' >/dev/null; then
+          pr_status="failing"
+        fi
+      fi
+      pr_nums+=("$pr_num")
+      pr_titles+=("$pr_title")
+      pr_created_ats+=("$pr_created_at")
+      pr_urls+=("$pr_url")
+      pr_statuses+=("$pr_status")
+      pr_matched+=("true")
+    else
+      pr_nums+=("")
+      pr_titles+=("")
+      pr_created_ats+=("")
+      pr_urls+=("")
+      pr_statuses+=("none")
+      pr_matched+=("false")
+    fi
+  done
+
+  # Print the table
+  echo ""
+  printf "  ${BOLD}%-8s %-38s %-34s %-7s %-36s %s${NC}\n" "Status" "Branch" "Worktree" "PR" "Title" "Created"
+  echo "  ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+
+  local i pr_label
+  for i in "${!all_branches[@]}"; do
+    local branch="${all_branches[$i]}" display_branch worktree display_title display_created_at wt_i
+    display_branch="$branch"
+    if [[ ${#display_branch} -gt 38 ]]; then
+      display_branch="${display_branch:0:35}..."
+    fi
+    worktree="—"
+    for wt_i in "${!WT_BRANCHES[@]}"; do
+      if [[ "${WT_BRANCHES[$wt_i]}" == "$branch" ]]; then
+        worktree="${WT_PATHS[$wt_i]#$HOME/}"
+        break
+      fi
+    done
+    local status_icon
+    case "${pr_statuses[$i]}" in
+      draft)   status_icon="${YELLOW}○${NC}" ;;
+      open)    status_icon="${GREEN}●${NC}" ;;
+      failing) status_icon="${RED}✕${NC}" ;;
+      merged)  status_icon="${MAGENTA}✓${NC}" ;;
+      closed)  status_icon="${RED}✕${NC}" ;;
+      *)       status_icon="${DIM}-${NC}" ;;
+    esac
+
+    if [[ "${pr_matched[$i]}" == "true" ]]; then
+      display_title="${pr_titles[$i]}"
+      if [[ ${#display_title} -gt 36 ]]; then
+        display_title="${display_title:0:33}..."
+      fi
+      display_created_at="${pr_created_ats[$i]:0:10}"
+      printf -v pr_label '#%-6s' "${pr_nums[$i]}"
+      printf "  %s     %-38s " "$status_icon" "$display_branch"
+      print_worktree_path_cell "$worktree" "$current_wt" 34
+      printf " "
+      printf "${CYAN}\033]8;;%s\033\\%s\033]8;;\033\\${NC} %-36s %s\n" \
+        "${pr_urls[$i]}" "$pr_label" "$display_title" "$display_created_at"
+    else
+      printf "  %s     %-38s " "$status_icon" "$display_branch"
+      print_worktree_path_cell "$worktree" "$current_wt" 34
+      printf ' %s—%s\n' "$DIM" "$NC"
+    fi
+  done
+  echo ""
+  printf '  %s● open  ○ draft  ✕ failing  - none%s\n' "$DIM" "$NC"
+
+  # Check if any PRs were found
+  local has_prs=false
+  for matched in "${pr_matched[@]}"; do
+    if [[ "$matched" == "true" ]]; then
+      has_prs=true
+      break
+    fi
+  done
+
+  if [[ "$has_prs" == false ]]; then
+    info "No pull requests found for local branches."
+  fi
+}
+cmd_pr_help() {
+  cat <<EOF
+${BOLD}git-kiss pull requests${NC}
+
+${BOLD}USAGE${NC}
+  gk pr <title> [gh flags...]
+  gk pr ls
+  gk pr help
+
+${BOLD}COMMANDS${NC}
+  <title> [flags]  Create a pull request for the current feature branch
+  ls               List open pull requests for local branches/worktrees
+  help             Show this help message
+
+${BOLD}EXAMPLES${NC}
+  gk pr "Add login feature"              Create a PR with auto-filled description
+  gk pr "Add login feature" --draft      Create a draft PR
+  gk pr ls                               List PRs for all local branches
+
+${BOLD}REQUIREMENTS${NC}
+  gh CLI: https://cli.github.com
+
+EOF
+}
 # Print the greatest strict vMAJOR.MINOR.PATCH tag. Creation dates and
 # non-semantic tags are intentionally irrelevant to release numbering.
 highest_semver_tag() {
@@ -887,15 +1103,11 @@ cmd_dp() {
     die "You must be on $DEVELOP_BRANCH to deploy to production. Current branch: $current"
   fi
 
-  info "Pulling latest $DEVELOP_BRANCH..."
-  run_rebase "Pull --rebase of $DEVELOP_BRANCH" pull origin "$DEVELOP_BRANCH" --rebase
+  pull_branch_from_origin "$DEVELOP_BRANCH" "Pulling latest $DEVELOP_BRANCH..."
 
-  info "Pulling latest $MAIN_BRANCH..."
-  git checkout "$MAIN_BRANCH"
-  run_rebase "Pull --rebase of $MAIN_BRANCH" pull origin "$MAIN_BRANCH" --rebase
+  checkout_and_pull_branch "$MAIN_BRANCH"
 
-  info "Rebasing $DEVELOP_BRANCH onto $MAIN_BRANCH..."
-  run_rebase "Rebase onto $DEVELOP_BRANCH" rebase "$DEVELOP_BRANCH"
+  rebase_current_onto "$DEVELOP_BRANCH"
 
   if [[ "$USE_TAGS" == "true" ]]; then
     local latest_tag current_release next_release tag
@@ -983,15 +1195,11 @@ cmd_ds() {
   local base
   base="$(base_branch)"
 
-  info "Rebasing $branch against $base..."
-  run_rebase "Rebase of $branch onto $base" rebase "$base"
+  rebase_current_onto "$base"
 
-  info "Pulling latest $STAGING_BRANCH..."
-  git checkout "$STAGING_BRANCH"
-  run_rebase "Pull --rebase of $STAGING_BRANCH" pull origin "$STAGING_BRANCH" --rebase
+  checkout_and_pull_branch "$STAGING_BRANCH"
 
-  info "Rebasing $STAGING_BRANCH onto $branch..."
-  run_rebase "Rebase of $STAGING_BRANCH onto $branch" rebase "$branch"
+  rebase_current_onto "$branch"
 
   success "Staging prepared with changes from $branch."
 
@@ -1065,13 +1273,10 @@ cmd_rf() {
   local base
   base="$(base_branch)"
 
-  info "Pulling latest $base..."
-  git checkout "$base"
-  run_rebase "Pull --rebase of $base" pull origin "$base" --rebase
+  checkout_and_pull_branch "$base"
 
-  info "Rebasing $branch onto $base..."
   git checkout "$branch"
-  run_rebase "Rebase of $branch onto $base" rebase "$base"
+  rebase_current_onto "$base"
 
   success "Branch $branch is up to date with $base."
 }
@@ -1250,6 +1455,43 @@ main_worktree_path() {
   git worktree list --porcelain | head -1 | sed 's/^worktree //'
 }
 
+# Print a compact worktree path, colourising the active worktree. The path is
+# shortened from $HOME to ~ so all worktree tables use the same readable form.
+print_worktree_path_cell() {
+  local path="$1" current_wt="$2" width="$3" display
+  if [[ "$path" == "$HOME" ]]; then
+    display="~"
+  elif [[ "$path" == "$HOME/"* ]]; then
+    printf -v display '%s/%s' '~' "${path#"$HOME"/}"
+  else
+    display="$path"
+  fi
+
+  if [[ "$path" == "$current_wt" ]]; then
+    display+=" (current)"
+  fi
+  if [[ ${#display} -gt "$width" ]]; then
+    display="${display:0:width-3}..."
+  fi
+
+  if [[ "$path" == "$current_wt" ]]; then
+    printf "${GREEN}%-${width}s${NC}" "$display"
+  else
+    printf "%-${width}s" "$display"
+  fi
+}
+
+# Keep fixed-width terminal columns fixed. printf pads short values, but does
+# not truncate long ones, so every value must be shortened before formatting.
+truncate_display() {
+  local value="$1" width="$2"
+  if [[ ${#value} -gt "$width" ]]; then
+    printf '%s...' "${value:0:width-3}"
+  else
+    printf '%s' "$value"
+  fi
+}
+
 remove_worktree_checked() {
   local main_path="$1" rm_path="$2" remove_status metadata_status=0 worktrees line
   local registration_remains=false filesystem_remains=false
@@ -1296,6 +1538,26 @@ remove_worktree_checked() {
   else
     return 1
   fi
+}
+
+# True when $branch is fully merged into $base, evaluated from the main worktree.
+# The branch list is captured into a variable before grep sees it: piping
+# `git branch --merged` straight into `grep -q` lets grep close the pipe on its
+# first match, and under `set -o pipefail` the SIGPIPE-killed git (exit 141)
+# would make a genuinely-merged branch read as not merged.
+branch_merged_into_base() {
+  local main_path="$1" base="$2" branch="$3" merged
+  merged="$(git -C "$main_path" branch --merged "$base" --format='%(refname:short)')"
+  grep -qxF "$branch" <<< "$merged"
+}
+
+# Safely delete a local branch from the main worktree (refuses if unmerged).
+# Shared by `gk wt rm` and `gk wt clean` so the two stay consistent and the -C
+# main-worktree pinning (cwd-safe when a linked worktree was just removed) lives
+# in one place.
+delete_merged_branch() {
+  local main_path="$1" branch="$2"
+  git -C "$main_path" branch -d "$branch"
 }
 
 worktree_dir_name() {
@@ -1507,13 +1769,14 @@ print_worktree_table() {
   current_wt="$(git rev-parse --show-toplevel)"
 
   echo ""
-  printf "  ${BOLD}%-4s %-30s %-40s %s${NC}\n" "#" "Branch" "Path" "Status"
+  printf "  ${BOLD}%-4s %-30s %-50s %s${NC}\n" "#" "Branch" "Path" "Status"
   echo "  ─────────────────────────────────────────────────────────────────────────────────"
 
   local i
   for i in "${!WT_PATHS[@]}"; do
     local wt_path="${WT_PATHS[$i]}"
-    local wt_branch="${WT_BRANCHES[$i]}"
+    local wt_branch="${WT_BRANCHES[$i]}" display_branch
+    display_branch="$(truncate_display "$wt_branch" 30)"
 
     # Current marker
     local marker="  "
@@ -1546,7 +1809,9 @@ print_worktree_table() {
       fi
     fi
 
-    printf "${marker}${BOLD}%-4s${NC} %-30s %-40s %s%s\n" "$i" "$wt_branch" "$wt_path" "$ab" "$dirty"
+    printf "${marker}${BOLD}%-4s${NC} %-30s " "$i" "$display_branch"
+    print_worktree_path_cell "$wt_path" "$current_wt" 50
+    printf " %s%s\n" "$ab" "$dirty"
   done
   echo ""
 }
@@ -1706,8 +1971,8 @@ cmd_wt_rm() {
   local base
   base="$(base_branch)"
   if [[ "$rm_branch" != "(detached)" && "$rm_branch" != "???" ]]; then
-    if git -C "$main_path" branch --merged "$base" --format='%(refname:short)' | grep -qxF "$rm_branch"; then
-      if git -C "$main_path" branch -d "$rm_branch"; then
+    if branch_merged_into_base "$main_path" "$base" "$rm_branch"; then
+      if delete_merged_branch "$main_path" "$rm_branch"; then
         success "Worktree removed. Branch $rm_branch deleted (was merged)."
       else
         error "Worktree removed, but could not delete merged branch $rm_branch."
@@ -1753,7 +2018,7 @@ cmd_wt_clean() {
     fi
 
     # Check if merged
-    if git branch --merged "$base" --format='%(refname:short)' | grep -qxF "$wt_branch"; then
+    if branch_merged_into_base "$main_path" "$base" "$wt_branch"; then
       # In the non-force path, don't remove a worktree with uncommitted changes.
       # 'gk wt clean!' (--force) removes merged worktrees regardless.
       if [[ "$force" != true ]]; then
@@ -1790,12 +2055,17 @@ cmd_wt_clean() {
     fi
   fi
 
+  # Removing a worktree can delete the directory this process is running from
+  # (when clean is invoked from inside a merged worktree), after which a bare
+  # `git` cannot read its cwd. Every git call in this loop must therefore run
+  # against the main worktree - both helpers below pin -C "$main_path" for that
+  # reason, so keep any new git invocation here going through them.
   local removed=0
   local failures=0
   for i in "${!clean_paths[@]}"; do
     info "Removing ${clean_branches[$i]} (${clean_paths[$i]})..."
-    if git worktree remove "${clean_paths[$i]}" --force; then
-      if git branch -d "${clean_branches[$i]}" 2>/dev/null; then
+    if remove_worktree_checked "$main_path" "${clean_paths[$i]}"; then
+      if delete_merged_branch "$main_path" "${clean_branches[$i]}" 2>/dev/null; then
         success "Removed ${clean_branches[$i]}"
       else
         warn "Removed worktree ${clean_branches[$i]}, but could not delete its branch."
@@ -1870,7 +2140,8 @@ ${BOLD}COMMANDS${NC}
   cm <msg>     Add all changes and commit with message
   rc / rc!     Reset last commit safely / force an exceptional reset
   pf           Publish feature branch to remote
-  pr <title>   Create a pull request (requires gh CLI)
+  pr <title>    Create a pull request (requires gh CLI)
+  pr ls         List pull requests for local branches
   rf           Rebase feature branch against base branch
   ds           Deploy to staging (prompt to force push)
   ds!          Deploy to staging (force push automatically)
