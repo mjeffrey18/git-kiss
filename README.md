@@ -25,30 +25,32 @@ gk nf <feature-name> # start a feature branch
 # ... make changes, commit ...
 gk pf                # publish branch to remote
 gk pr <title>        # create a pull request (requires gh CLI)
+gk pr ls             # list PRs for local branches
 gk rf                # rebase feature with latest base branch changes
 gk ff                # finish feature (merge into base branch)
 ```
 
 ## Commands
 
-| Command           | Description                                                             |
-| ----------------- | ----------------------------------------------------------------------- |
-| `gk nf "<name>"`  | **New feature** — create a feature branch from the base branch          |
-| `gk ff` / `ff!`   | **Finish feature** — merge feature into base branch (merge commit)      |
-| `gk sf` / `sf!`   | **Squash feature** — squash all commits on the branch into one          |
-| `gk cm "<msg>"`   | **Commit** — add all changes and commit with message                    |
+| Command           | Description                                                              |
+| ----------------- | ------------------------------------------------------------------------ |
+| `gk nf "<name>"`  | **New feature** — create a feature branch from the base branch           |
+| `gk ff` / `ff!`   | **Finish feature** — merge feature into base branch (merge commit)       |
+| `gk sf` / `sf!`   | **Squash feature** — squash all commits on the branch into one           |
+| `gk cm "<msg>"`   | **Commit** — add all changes and commit with message                     |
 | `gk rc` / `rc!`   | **Reset commit** - safely undo the last commit, keeping changes unstaged |
-| `gk pf`           | **Publish feature** — push feature branch to remote                     |
-| `gk pr "<title>"` | **Pull request** — create a PR via `gh` CLI (supports extra `gh` flags) |
-| `gk rf`           | **Rebase feature** — rebase feature against base branch                 |
-| `gk ds` / `ds!`   | **Deploy staging** — rebase feature onto staging branch                 |
-| `gk dp` / `dp!`   | **Deploy production** — rebase develop into main and tag a release      |
-| `gk wt <cmd>`     | **Worktree** — manage git worktrees (see below)                         |
-| `gk init`         | **Init** — interactively generate configuration in one selected scope   |
+| `gk pf`           | **Publish feature** — push feature branch to remote                      |
+| `gk pr "<title>"` | **Pull request** — create a PR via `gh` CLI (supports extra `gh` flags)  |
+| `gk pr ls`        | **Pull requests** - list PRs for local branches                          |
+| `gk rf`           | **Rebase feature** — rebase feature against base branch                  |
+| `gk ds` / `ds!`   | **Deploy staging** — rebase feature onto staging branch                  |
+| `gk dp` / `dp!`   | **Deploy production** — rebase develop into main and tag a release       |
+| `gk wt <cmd>`     | **Worktree** — manage git worktrees (see below)                          |
+| `gk init`         | **Init** — interactively generate configuration in one selected scope    |
 | `gk migrate`      | **Migrate** — convert legacy shell configuration to JSONC                |
-| `gk shell-init`   | **Shell init** — print shell integration for `gk wt co`                 |
-| `gk version`      | **Version** — print the installed version (`--version` too)             |
-| `gk help`         | **Help** — show usage                                                   |
+| `gk shell-init`   | **Shell init** — print shell integration for `gk wt co`                  |
+| `gk version`      | **Version** — print the installed version (`--version` too)              |
+| `gk help`         | **Help** — show usage                                                    |
 
 ### Pull Requests
 
@@ -61,6 +63,8 @@ gk pr "Update API" --reviewer octocat --label enhancement
 gk pr "Refactor auth" --body "Switched to JWT tokens"
 ```
 
+Use `gk pr ls` to see pull requests for every local branch, including branches in linked worktrees.
+
 ## Worktrees
 
 `gk wt` makes it easy to work on multiple branches simultaneously using [git worktrees](https://git-scm.com/docs/git-worktree). Each worktree gets its own directory as a sibling to your main repo:
@@ -71,16 +75,16 @@ gk pr "Refactor auth" --body "Switched to JWT tokens"
 ~/projects/my-repo--hotfix-db/   ← gk wt nb hotfix-db
 ```
 
-| Command           | Description                                                              |
-| ----------------- | ------------------------------------------------------------------------ |
-| `gk wt nf <name>` | New worktree with a feature branch (uses prefix/initials)                |
-| `gk wt nb <name>` | New worktree with a plain branch                                         |
-| `gk wt ls`        | List all worktrees with status                                           |
-| `gk wt rm <id>`   | Remove a worktree by index or branch name (prompts if dirty)             |
-| `gk wt rm! <id>`  | Remove a worktree, skipping the dirty-tree prompt                        |
-| `gk wt clean`     | Remove merged worktrees (skips any with uncommitted changes)             |
-| `gk wt clean!`    | Remove merged worktrees, including any with uncommitted changes          |
-| `gk wt co [index]`| Select from the worktree status table or use a displayed index (cds with shell-init) |
+| Command            | Description                                                                          |
+| ------------------ | ------------------------------------------------------------------------------------ |
+| `gk wt nf <name>`  | New worktree with a feature branch (uses prefix/initials)                            |
+| `gk wt nb <name>`  | New worktree with a plain branch                                                     |
+| `gk wt ls`         | List all worktrees with status                                                       |
+| `gk wt rm <id>`    | Remove a worktree by index or branch name (prompts if dirty)                         |
+| `gk wt rm! <id>`   | Remove a worktree, skipping the dirty-tree prompt                                    |
+| `gk wt clean`      | Remove merged worktrees (skips any with uncommitted changes)                         |
+| `gk wt clean!`     | Remove merged worktrees, including any with uncommitted changes                      |
+| `gk wt co [index]` | Select from the worktree status table or use a displayed index (cds with shell-init) |
 
 ```bash
 gk wt nf task1      # create worktree with feature/mj-task1 branch
@@ -102,10 +106,10 @@ worktree. If it is absent, git-kiss falls back to `worktree_copy` from the
 effective configuration. An empty or comment-only include file intentionally
 copies nothing.
 
-| Source                                     | Tracked         | Best for                                    |
-| ------------------------------------------ | --------------- | ------------------------------------------- |
-| `.worktreeinclude` in the canonical main worktree | commit it | authoritative team-wide copy list |
-| `worktree_copy` in your `.gitkiss.*.jsonc` | varies by layer | fallback when no include file exists |
+| Source                                            | Tracked         | Best for                             |
+| ------------------------------------------------- | --------------- | ------------------------------------ |
+| `.worktreeinclude` in the canonical main worktree | commit it       | authoritative team-wide copy list    |
+| `worktree_copy` in your `.gitkiss.*.jsonc`        | varies by layer | fallback when no include file exists |
 
 #### .worktreeinclude
 
@@ -125,7 +129,7 @@ config/local
 ```jsonc
 // .gitkiss.local.jsonc - gitignored personal overrides
 {
-  "worktree_copy": [".env*", "config/local"]
+  "worktree_copy": [".env*", "config/local"],
 }
 ```
 
@@ -266,7 +270,7 @@ overrides keys set by earlier ones, so you only set what you want to change:
 | Location               | Scope                                  | Tracked    |
 | ---------------------- | -------------------------------------- | ---------- |
 | `~/.gk/.gitkiss.jsonc` | global personal defaults for all repos | n/a        |
-| `~/.gk/projects.jsonc` | per-project personal defaults           | n/a        |
+| `~/.gk/projects.jsonc` | per-project personal defaults          | n/a        |
 | `.gitkiss.jsonc`       | per-repo team config                   | commit it  |
 | `.gitkiss.local.jsonc` | per-repo personal overrides            | gitignored |
 
@@ -289,7 +293,7 @@ exists; collisions leave the legacy file untouched.
   "develop_branch": "develop",
   "staging_branch": "staging",
   "feature_prefix": "feature/",
-  "use_tags": true
+  "use_tags": true,
 }
 ```
 
@@ -297,18 +301,18 @@ exists; collisions leave the legacy file untouched.
 // .gitkiss.local.jsonc - gitignored personal overrides
 {
   "initials": "mj",
-  "worktree_copy": [".env*", "config/local"]
+  "worktree_copy": [".env*", "config/local"],
 }
 ```
 
-| Key              | Default    | Description                                                                                                              |
-| ---------------- | ---------- | ------------------------------------------------------------------------------------------------------------------------ |
-| `main_branch`    | `main`     | Production branch                                                                                                        |
-| `develop_branch` | `develop`  | Integration branch (`""` for simple flow)                                                                                |
-| `staging_branch` | `staging`  | Staging branch (`""` if unused)                                                                                          |
-| `feature_prefix` | `feature/` | Prefix for feature branches                                                                                              |
-| `use_tags`       | `true`     | Auto-increment semver tags on `gk dp`                                                                                    |
-| `initials`       |            | Prepended to feature branches (e.g. `mj`) - usually in `.local`                                                          |
+| Key              | Default    | Description                                                                                                               |
+| ---------------- | ---------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `main_branch`    | `main`     | Production branch                                                                                                         |
+| `develop_branch` | `develop`  | Integration branch (`""` for simple flow)                                                                                 |
+| `staging_branch` | `staging`  | Staging branch (`""` if unused)                                                                                           |
+| `feature_prefix` | `feature/` | Prefix for feature branches                                                                                               |
+| `use_tags`       | `true`     | Auto-increment semver tags on `gk dp`                                                                                     |
+| `initials`       |            | Prepended to feature branches (e.g. `mj`) - usually in `.local`                                                           |
 | `worktree_copy`  | `[]`       | Files/folders (literal or glob) copied into new worktrees when no `.worktreeinclude` exists - see [Worktrees](#worktrees) |
 
 > Comments must be on their own line (`//`). Inline and `/* */` comments aren't supported.
