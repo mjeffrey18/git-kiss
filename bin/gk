@@ -1596,6 +1596,38 @@ path_is_within() {
   [[ "$path" == "$root" || "$path" == "$root/"* ]]
 }
 
+worktree_copy_includes_path() {
+  local path="$1" source
+  for source in "${WORKTREE_COPY_SOURCES[@]}"; do
+    [[ -n "$source" ]] || continue
+    path_is_within "$path" "$source" && return 0
+  done
+  return 1
+}
+
+validate_worktree_symlink() {
+  local link="$1" main_path="$2" target target_path target_parent resolved_target
+  target="$(readlink "$link")" || die "Could not read worktree copy symlink: $link"
+  [[ -n "$target" && "$target" != /* ]] || \
+    die "Worktree copy refuses symlinks with absolute targets: $link"
+  [[ -e "$link" ]] || die "Worktree copy refuses broken symlinks: $link"
+
+  target_path="$(dirname "$link")/$target"
+  if [[ -d "$target_path" ]]; then
+    resolved_target="$(cd -P "$target_path" 2>/dev/null && pwd)" || \
+      die "Could not resolve worktree copy symlink target: $link"
+  else
+    target_parent="$(cd -P "$(dirname "$target_path")" 2>/dev/null && pwd)" || \
+      die "Could not resolve worktree copy symlink target: $link"
+    resolved_target="$target_parent/$(basename "$target_path")"
+  fi
+
+  path_is_within "$resolved_target" "$main_path" || \
+    die "Worktree copy refuses symlinks whose targets escape the project root: $link -> $target"
+  worktree_copy_includes_path "$resolved_target" || \
+    die "Worktree copy refuses symlinks whose targets are not copied: $link -> $target"
+}
+
 WORKTREE_COPY_MAIN_PATH=""
 WORKTREE_COPY_SOURCES=("")
 
@@ -1624,21 +1656,16 @@ preflight_worktree_copy() {
   # shellcheck disable=SC2064  # expand the saved shopt state now, at trap-set time, on purpose
   trap "eval $(printf '%q' "$saved_nullglob"); eval $(printf '%q' "$saved_dotglob"); trap - RETURN" RETURN
 
-  local pattern src rel_src matched _done=$'\n' src_parent nested_link
+  local pattern src rel_src matched _done=$'\n' src_parent link
   for pattern in "${patterns[@]}"; do
     [[ -z "$pattern" ]] && continue
     validate_worktree_pattern "$pattern" "$([[ -f "$include_file" ]] && echo .worktreeinclude || echo worktree_copy)"
     matched=0
     while IFS= read -r rel_src; do
       src="$main_path/$rel_src"
-      [[ -e "$src" ]] || continue
-      [[ ! -L "$src" ]] || die "Worktree copy refuses symlinks: $src"
+      [[ -e "$src" || -L "$src" ]] || continue
       src_parent="$(cd -P "$(dirname "$src")" && pwd)" || die "Could not resolve worktree copy source: $src"
       path_is_within "$src_parent" "$main_path" || die "Worktree copy source escapes project root: $src"
-      if [[ -d "$src" ]]; then
-        nested_link="$(find "$src" -type l -print -quit 2>/dev/null)"
-        [[ -z "$nested_link" ]] || die "Worktree copy refuses symlinks: $nested_link"
-      fi
       matched=1
       case "$_done" in *$'\n'"$src"$'\n'*) continue ;; esac
       _done="${_done}${src}"$'\n'
@@ -1652,6 +1679,15 @@ preflight_worktree_copy() {
       debug "worktree copy: no match for '$pattern'"
     fi
   done
+
+  # cp -a preserves relative symlinks. Permit them only when their targets are
+  # inside the project and are part of the same copy set, so the copied link
+  # cannot escape the new worktree or depend on a path left in the main one.
+  if [[ "${#WORKTREE_COPY_SOURCES[@]}" -gt 1 ]]; then
+    while IFS= read -r link; do
+      [[ -n "$link" ]] && validate_worktree_symlink "$link" "$main_path"
+    done < <(find "${WORKTREE_COPY_SOURCES[@]:1}" -type l -print 2>/dev/null)
+  fi
 }
 
 copy_worktree_files() {
@@ -2114,7 +2150,8 @@ ${BOLD}CONFIG${NC}
                     Example (.gitkiss.local.jsonc): "worktree_copy": [".env*", "config/local"]
   .worktreeinclude  Optional file in the project root, .gitignore-style (one glob per
                     line, # comments, blank lines ignored). When present it is authoritative
-                    and suppresses worktree_copy; absolute/traversal patterns and symlinks are refused.
+                    and suppresses worktree_copy. Absolute/traversal patterns are refused.
+                    Relative symlinks are copied only when their targets are also copied.
 
 ${BOLD}TIP${NC}
   Add shell integration so 'gk wt co' cds you straight there:

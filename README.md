@@ -133,7 +133,7 @@ config/local
 }
 ```
 
-Patterns are resolved as shell globs **relative to the project root** and copied from your main worktree's current working tree (so uncommitted files come across too). Literal paths containing spaces are supported. Absolute paths and `.` / `..` path components are rejected. Symlinks are refused rather than copied, so a copy source cannot escape the project root. Linked worktrees use the canonical main-worktree include file and inherit the main worktree's `.gitkiss.local.jsonc` unless they provide their own local override.
+Patterns are resolved as shell globs **relative to the project root** and copied from your main worktree's current working tree (so uncommitted files come across too). Literal paths containing spaces are supported. Absolute paths and `.` / `..` path components are rejected. Relative symlinks are preserved only when their targets stay inside the project and are also included in the copy set. Absolute, broken, escaping, and partially copied symlinks are refused. Linked worktrees use the canonical main-worktree include file and inherit the main worktree's `.gitkiss.local.jsonc` unless they provide their own local override.
 
 ### Navigating between worktrees
 

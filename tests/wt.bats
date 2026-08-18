@@ -786,7 +786,25 @@ EOF
   done
 }
 
-@test "gk wt nf refuses symlink copy sources" {
+@test "gk wt nf copies relative symlinks whose targets are also copied" {
+  mkdir -p "$REPO_DIR/node_modules/browser/bin"
+  mkdir -p "$REPO_DIR/node_modules/plugin/node_modules/.bin"
+  echo '#!/usr/bin/env node' > "$REPO_DIR/node_modules/browser/bin/cli.js"
+  ln -s '../../../browser/bin/cli.js' "$REPO_DIR/node_modules/plugin/node_modules/.bin/browser"
+  echo 'node_modules/*' > "$REPO_DIR/.worktreeinclude"
+
+  run bash "$GK" wt nf internal-symlink
+  assert_success
+
+  local wt_dir link
+  wt_dir="$(dirname "$REPO_DIR")/$(basename "$REPO_DIR")--internal-symlink"
+  link="$wt_dir/node_modules/plugin/node_modules/.bin/browser"
+  [ -L "$link" ]
+  assert_equal "$(readlink "$link")" '../../../browser/bin/cli.js'
+  assert_equal "$(cat "$link")" '#!/usr/bin/env node'
+}
+
+@test "gk wt nf refuses symlinks with absolute targets" {
   ln -s "$BATS_TEST_TMPDIR" "$REPO_DIR/outside-link"
   echo 'outside-link' > "$REPO_DIR/.worktreeinclude"
 
@@ -797,9 +815,10 @@ EOF
   [ ! -d "$(dirname "$REPO_DIR")/$(basename "$REPO_DIR")--symlinked" ]
 }
 
-@test "gk wt nf refuses nested symlinks before creating a worktree" {
+@test "gk wt nf refuses nested symlinks whose targets escape the project root" {
   mkdir -p "$REPO_DIR/config/local"
-  ln -s "$BATS_TEST_TMPDIR" "$REPO_DIR/config/local/outside-link"
+  mkdir -p "$BATS_TEST_TMPDIR/outside"
+  ln -s '../../../outside' "$REPO_DIR/config/local/outside-link"
   echo 'config' > "$REPO_DIR/.worktreeinclude"
 
   run bash "$GK" wt nf nested-symlinked
@@ -807,6 +826,20 @@ EOF
   assert_output --partial "refuses symlinks"
   ! git show-ref --verify --quiet refs/heads/feature/nested-symlinked
   [ ! -d "$(dirname "$REPO_DIR")/$(basename "$REPO_DIR")--nested-symlinked" ]
+}
+
+@test "gk wt nf refuses symlinks whose project-local targets are not copied" {
+  mkdir -p "$REPO_DIR/config/local" "$REPO_DIR/shared"
+  echo 'shared' > "$REPO_DIR/shared/settings"
+  ln -s '../../shared/settings' "$REPO_DIR/config/local/settings"
+  echo 'config' > "$REPO_DIR/.worktreeinclude"
+
+  run bash "$GK" wt nf unselected-symlink-target
+  assert_failure
+  assert_output --partial "targets are not copied"
+  refute_output --partial "Fetching latest"
+  ! git show-ref --verify --quiet refs/heads/feature/unselected-symlink-target
+  [ ! -d "$(dirname "$REPO_DIR")/$(basename "$REPO_DIR")--unselected-symlink-target" ]
 }
 
 @test "gk wt clean reports a locked worktree removal failure" {
