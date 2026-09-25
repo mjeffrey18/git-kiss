@@ -2,7 +2,7 @@
 
 Keep It Simple, Stupid — a dead-simple CLI wrapper for git and github cli (optional) for clean git workflows.
 
-`gk` wraps common git operations into short commands that keep your branch history clean and linear. Most operations use **rebasing** to avoid unnecessary merge commits and keep your history easy to follow. The one exception is `gk ff` (feature finish), which uses a **merge commit with `--no-ff`** so you can always see where a feature was integrated.
+`gk` wraps common git operations into short commands that keep your branch history clean and linear. Most operations use **rebasing** to avoid unnecessary merge commits and keep your history easy to follow. The one exception is `gk ff` (branch finish), which uses a **merge commit with `--no-ff`** so you can always see where a branch was integrated.
 
 ## Install
 
@@ -26,8 +26,8 @@ gk nf <feature-name> # start a feature branch
 gk pf                # publish branch to remote
 gk pr <title>        # create a pull request (requires gh CLI)
 gk pr ls             # list PRs for local branches
-gk rf                # rebase feature with latest base branch changes
-gk ff                # finish feature (merge into base branch)
+gk rf                # rebase the current branch with the latest base changes
+gk ff                # finish the current branch (merge into base branch)
 ```
 
 ## Commands
@@ -35,15 +35,15 @@ gk ff                # finish feature (merge into base branch)
 | Command           | Description                                                              |
 | ----------------- | ------------------------------------------------------------------------ |
 | `gk nf "<name>"`  | **New feature** — create a feature branch from the base branch           |
-| `gk ff` / `ff!`   | **Finish feature** — merge feature into base branch (merge commit)       |
-| `gk sf` / `sf!`   | **Squash feature** — squash all commits on the branch into one           |
+| `gk ff` / `ff!`   | **Finish branch** — merge the current branch into base (merge commit)    |
+| `gk sf` / `sf!`   | **Squash branch** — squash all commits on the current branch into one    |
 | `gk cm "<msg>"`   | **Commit** — add all changes and commit with message                     |
 | `gk rc` / `rc!`   | **Reset commit** - safely undo the last commit, keeping changes unstaged |
-| `gk pf`           | **Publish feature** — push feature branch to remote                      |
+| `gk pf`           | **Publish branch** — push the current branch to remote                   |
 | `gk pr "<title>"` | **Pull request** — create a PR via `gh` CLI (supports extra `gh` flags)  |
 | `gk pr ls`        | **Pull requests** - list PRs for local branches                          |
-| `gk rf`           | **Rebase feature** — rebase feature against base branch                  |
-| `gk ds` / `ds!`   | **Deploy staging** — rebase feature onto staging branch                  |
+| `gk rf`           | **Rebase branch** — rebase the current branch against base               |
+| `gk ds` / `ds!`   | **Deploy staging** — rebase the current branch onto staging              |
 | `gk dp` / `dp!`   | **Deploy production** — rebase develop into main and tag a release       |
 | `gk wt <cmd>`     | **Worktree** — manage git worktrees (see below)                          |
 | `gk init`         | **Init** — interactively generate configuration in one selected scope    |
@@ -162,12 +162,12 @@ alias wtco='cd $(gk wt co)'
 `gk wt ls` and the interactive `gk wt co` selector show:
 
 ```
-  #    Branch                         Path                                     Status
+  #    Worktree                                           Branch                         Status
   ─────────────────────────────────────────────────────────────────────────────────
-● 0    main                           ~/projects/my-repo
-  1    feature/mj-login               ~/projects/my-repo--mj-login             3↑ 1↓
-  2    feature/mj-signup              ~/projects/my-repo--mj-signup            2↑ *
-  3    hotfix-db                      ~/projects/my-repo--hotfix-db            1↑
+● 0    ~/projects/my-repo (current)                       main
+  1    ~/projects/my-repo--mj-login                       feature/mj-login               3↑ 1↓
+  2    ~/projects/my-repo--mj-signup                      feature/mj-signup              2↑ *
+  3    ~/projects/my-repo--hotfix-db                      hotfix-db                      1↑
 ```
 
 - `●` = current worktree
@@ -178,7 +178,9 @@ All other `gk` commands (`cm`, `pf`, `rf`, `pr`, etc.) work inside worktrees —
 
 ## How It Works
 
-git-kiss uses **rebasing** for almost everything. This keeps your commit history linear and easy to read — no tangled merge spaghetti. The only exception is `gk ff` which creates a **merge commit** (`--no-ff`) so you can clearly see where each feature was integrated.
+git-kiss uses **rebasing** for almost everything. This keeps your commit history linear and easy to read — no tangled merge spaghetti. The only exception is `gk ff` which creates a **merge commit** (`--no-ff`) so you can clearly see where each branch was integrated.
+
+Branch workflow commands accept any named branch except the configured main, develop, and staging branches. `feature_prefix` only controls names created by `gk nf` and `gk wt nf`.
 
 ### Full Flow
 
@@ -310,7 +312,7 @@ exists; collisions leave the legacy file untouched.
 | `main_branch`    | `main`     | Production branch                                                                                                         |
 | `develop_branch` | `develop`  | Integration branch (`""` for simple flow)                                                                                 |
 | `staging_branch` | `staging`  | Staging branch (`""` if unused)                                                                                           |
-| `feature_prefix` | `feature/` | Prefix for feature branches                                                                                               |
+| `feature_prefix` | `feature/` | Prefix for branches created by `gk nf` and `gk wt nf`                                                                     |
 | `use_tags`       | `true`     | Auto-increment semver tags on `gk dp`                                                                                     |
 | `initials`       |            | Prepended to feature branches (e.g. `mj`) - usually in `.local`                                                           |
 | `worktree_copy`  | `[]`       | Files/folders (literal or glob) copied into new worktrees when no `.worktreeinclude` exists - see [Worktrees](#worktrees) |

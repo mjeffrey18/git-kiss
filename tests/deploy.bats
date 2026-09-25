@@ -11,15 +11,15 @@ teardown() {
 
 # ─── ds (deploy staging) ────────────────────────────────────────────────────
 
-@test "gk ds fails when not on feature branch" {
+@test "gk ds rejects the configured develop branch" {
   run bash "$GK" ds
   assert_failure
-  assert_output --partial "Not on a feature branch"
+  assert_output --partial "configured workflow branch: develop"
 }
 
-@test "gk ds! deploys the feature branch to staging" {
+@test "gk ds! deploys a non-prefixed branch to staging" {
   git checkout develop >/dev/null 2>&1
-  git checkout -b feature/staging-work >/dev/null 2>&1
+  git checkout -b t3code/staging-work >/dev/null 2>&1
   echo "staging feature" > staging-feature.txt
   git add -A && git commit -m "staging feature work" >/dev/null 2>&1
 

@@ -9,8 +9,10 @@ teardown() {
   teardown_test_repo
 }
 
-@test "gk sf! squashes multiple commits into one" {
-  create_feature_branch "login"
+@test "gk sf! squashes multiple commits on a non-prefixed branch" {
+  git checkout -b t3code/login >/dev/null 2>&1
+  echo "first" > first.txt
+  git add -A && git commit -m "first commit" >/dev/null 2>&1
 
   # Add more commits
   echo "second" > second.txt
@@ -49,10 +51,10 @@ teardown() {
   assert_output --partial "Working tree is dirty"
 }
 
-@test "gk sf! fails when not on feature branch" {
+@test "gk sf! rejects the configured main branch" {
   run bash "$GK" 'sf!'
   assert_failure
-  assert_output --partial "Not on a feature branch"
+  assert_output --partial "configured workflow branch: main"
 }
 
 @test "gk sf! preserves commit messages in squashed commit" {

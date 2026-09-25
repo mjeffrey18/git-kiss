@@ -9,8 +9,10 @@ teardown() {
   teardown_test_repo
 }
 
-@test "gk rf rebases feature onto base" {
-  create_feature_branch "login"
+@test "gk rf rebases a non-prefixed branch onto base" {
+  git checkout -b t3code/login >/dev/null 2>&1
+  echo "branch work" > branch-work.txt
+  git add -A && git commit -m "branch work" >/dev/null 2>&1
 
   # Add a commit to main
   git checkout main >/dev/null 2>&1
@@ -18,13 +20,13 @@ teardown() {
   git add -A && git commit -m "main update" >/dev/null 2>&1
   git push origin main >/dev/null 2>&1
 
-  git checkout feature/login >/dev/null 2>&1
+  git checkout t3code/login >/dev/null 2>&1
 
   run bash "$GK" rf
   assert_success
   assert_output --partial "up to date with main"
 
-  # Feature branch should now have main's commit
+  # Working branch should now have main's commit
   [ -f "$REPO_DIR/main-update.txt" ]
 }
 
@@ -57,8 +59,8 @@ teardown() {
   assert_output --partial "Working tree is dirty"
 }
 
-@test "gk rf fails when not on feature branch" {
+@test "gk rf rejects the configured main branch" {
   run bash "$GK" rf
   assert_failure
-  assert_output --partial "Not on a feature branch"
+  assert_output --partial "configured workflow branch: main"
 }

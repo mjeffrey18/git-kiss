@@ -108,9 +108,11 @@ teardown() {
   assert_output --partial "2"
   assert_output --partial "hotfix-one"
   assert_output --partial "feature/login"
+  [[ "$output" == *"Worktree"*"Branch"*"Status"* ]]
+  [[ "$output" == *"repo--hotfix-one"*"hotfix-one"* ]]
 }
 
-@test "gk wt ls truncates long branch names before the path column" {
+@test "gk wt ls truncates long branch names within the branch column" {
   local long_branch="feature/this-branch-name-is-deliberately-long-for-the-table"
   local wt_dir="$BATS_TEST_TMPDIR/repo--long-branch"
   git worktree add "$wt_dir" -b "$long_branch" main >/dev/null 2>&1
@@ -357,9 +359,7 @@ teardown() {
 
   local selector
   selector="$(cat "$err_file")"
-  [[ "$selector" == *"Branch"* ]]
-  [[ "$selector" == *"Path"* ]]
-  [[ "$selector" == *"Status"* ]]
+  [[ "$selector" == *"Worktree"*"Branch"*"Status"* ]]
   [[ "$selector" == *"hotfix-db"* ]]
   [[ "$selector" == *"$wt_dir"* ]]
   [[ "$selector" == *"1↑"* ]]
