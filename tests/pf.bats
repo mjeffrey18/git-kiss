@@ -9,20 +9,20 @@ teardown() {
   teardown_test_repo
 }
 
-@test "gk pf pushes feature branch to origin" {
-  create_feature_branch "login"
+@test "gk pf pushes a non-prefixed branch to origin" {
+  git checkout -b hotfix/login >/dev/null 2>&1
 
   run bash "$GK" pf
   assert_success
   assert_output --partial "published to origin"
 
   # Remote should have the branch
-  run git ls-remote --heads origin feature/login
-  assert_output --partial "feature/login"
+  run git ls-remote --heads origin hotfix/login
+  assert_output --partial "hotfix/login"
 }
 
-@test "gk pf fails when not on feature branch" {
+@test "gk pf rejects the configured main branch" {
   run bash "$GK" pf
   assert_failure
-  assert_output --partial "Not on a feature branch"
+  assert_output --partial "configured workflow branch: main"
 }

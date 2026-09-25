@@ -15,7 +15,7 @@ git-kiss (`gk`) is a single-file Bash CLI tool that wraps common git operations 
 ## Key Conventions
 
 - All branch operations use **rebase** except `gk ff` which uses `--no-ff` merge
-- Feature branches must have the configured prefix (default `feature/`)
+- `feature_prefix` names branches created by `gk nf` and `gk wt nf`; branch workflow commands accept any named branch except the configured main, develop, and staging branches
 - Commands with `!` suffix (e.g. `ff!`, `dp!`) skip confirmation prompts and auto-push
 - Exit early with `die()` on errors — script uses `set -euo pipefail`
 - Legacy shell `.gitkiss` is auto-migrated when interactive (prompts the user), or read in place when non-interactive; `gk migrate` performs the conversion explicitly, splitting team vs personal config and backing the original up to `.bak`

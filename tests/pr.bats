@@ -48,15 +48,15 @@ teardown() {
   assert_output --partial "is not installed"
 }
 
-@test "gk pr fails when not on a feature branch" {
+@test "gk pr rejects the configured main branch" {
   # setup leaves us on main
   run bash "$GK" pr "My title"
   assert_failure
-  assert_output --partial "Not on a feature branch"
+  assert_output --partial "configured workflow branch: main"
 }
 
-@test "gk pr calls gh pr create with base, title and --fill" {
-  create_feature_branch "login"
+@test "gk pr accepts a non-prefixed branch and calls gh pr create" {
+  git checkout -b t3code/login >/dev/null 2>&1
 
   run bash "$GK" pr "My PR title"
   assert_success
@@ -164,6 +164,8 @@ STUB
   assert_success
   assert_output --partial "repo--login"
   assert_output --partial "●"
+  [[ "$output" == *"Worktree"*"Branch"*"PR"*"Title"*"Created"* ]]
+  [[ "$output" == *"repo--login"*"feature/login"*"#42"* ]]
 }
 
 @test "gk pr ls fetches enough PRs and displays status icons" {

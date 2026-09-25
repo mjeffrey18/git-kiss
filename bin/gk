@@ -469,11 +469,14 @@ require_clean_tree() {
   fi
 }
 
-require_feature_branch() {
+require_working_branch() {
   local branch
   branch="$(current_branch)"
-  if [[ "$branch" != "${FEATURE_PREFIX}"* ]]; then
-    die "Not on a feature branch. Current branch: $branch (expected prefix: ${FEATURE_PREFIX})"
+  if [[ -z "$branch" ]]; then
+    die "Detached HEAD is not a working branch. Check out a branch first."
+  fi
+  if [[ "$branch" == "$MAIN_BRANCH" || ( -n "$DEVELOP_BRANCH" && "$branch" == "$DEVELOP_BRANCH" ) || ( -n "$STAGING_BRANCH" && "$branch" == "$STAGING_BRANCH" ) ]]; then
+    die "Refusing to use configured workflow branch: $branch"
   fi
 }
 
@@ -770,7 +773,7 @@ cmd_ff() {
   fi
 
   require_clean_tree
-  require_feature_branch
+  require_working_branch
 
   local branch
   branch="$(current_branch)"
@@ -784,21 +787,21 @@ cmd_ff() {
   local behind
   behind="$(git rev-list --count HEAD.."$base")"
   if [[ "$behind" -gt 0 ]]; then
-    die "Feature branch is $behind commit(s) behind $base. Run 'gk rf' to rebase first."
+    die "Branch is $behind commit(s) behind $base. Run 'gk rf' to rebase first."
   fi
 
   info "Merging $branch into $base..."
   git checkout "$base"
   run_merge "Merge of $branch into $base" merge "$branch" --no-ff -m "Merge branch '$branch' into $base"
 
-  success "Feature $branch merged into $base."
+  success "Branch $branch merged into $base."
 
   if [[ "$force" == true ]]; then
     info "Pushing to origin/$base..."
     git push origin "$base"
     success "Pushed to origin/$base."
 
-    info "Deleting feature branch $branch..."
+    info "Deleting branch $branch..."
     git branch -d "$branch"
     git push origin --delete "$branch" 2>/dev/null || true
 
@@ -865,7 +868,7 @@ cmd_rc() {
 }
 
 cmd_pf() {
-  require_feature_branch
+  require_working_branch
 
   local branch
   branch="$(current_branch)"
@@ -889,7 +892,7 @@ cmd_pr() {
 
 cmd_pr_create() {
   require_command "gh" "Install the GitHub CLI: https://cli.github.com"
-  require_feature_branch
+  require_working_branch
 
   local title="${1:-}"
   if [[ -z "$title" ]]; then
@@ -989,7 +992,7 @@ cmd_pr_ls() {
 
   # Print the table
   echo ""
-  printf "  ${BOLD}%-8s %-38s %-34s %-7s %-36s %s${NC}\n" "Status" "Branch" "Worktree" "PR" "Title" "Created"
+  printf "  ${BOLD}%-8s %-34s %-38s %-7s %-36s %s${NC}\n" "Status" "Worktree" "Branch" "PR" "Title" "Created"
   echo "  ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
 
   local i pr_label
@@ -1023,15 +1026,15 @@ cmd_pr_ls() {
       fi
       display_created_at="${pr_created_ats[$i]:0:10}"
       printf -v pr_label '#%-6s' "${pr_nums[$i]}"
-      printf "  %s     %-38s " "$status_icon" "$display_branch"
+      printf "  %s     " "$status_icon"
       print_worktree_path_cell "$worktree" "$current_wt" 34
-      printf " "
+      printf " %-38s " "$display_branch"
       printf "${CYAN}\033]8;;%s\033\\%s\033]8;;\033\\${NC} %-36s %s\n" \
         "${pr_urls[$i]}" "$pr_label" "$display_title" "$display_created_at"
     else
-      printf "  %s     %-38s " "$status_icon" "$display_branch"
+      printf "  %s     " "$status_icon"
       print_worktree_path_cell "$worktree" "$current_wt" 34
-      printf ' %s—%s\n' "$DIM" "$NC"
+      printf ' %-38s %s—%s\n' "$display_branch" "$DIM" "$NC"
     fi
   done
   echo ""
@@ -1060,7 +1063,7 @@ ${BOLD}USAGE${NC}
   gk pr help
 
 ${BOLD}COMMANDS${NC}
-  <title> [flags]  Create a pull request for the current feature branch
+  <title> [flags]  Create a pull request for the current branch
   ls               List open pull requests for local branches/worktrees
   help             Show this help message
 
@@ -1187,7 +1190,7 @@ cmd_ds() {
   fi
 
   require_branch_config "STAGING_BRANCH" "STAGING_BRANCH"
-  require_feature_branch
+  require_working_branch
   require_clean_tree
 
   local branch
@@ -1227,7 +1230,7 @@ cmd_fs() {
     force=true
   fi
 
-  require_feature_branch
+  require_working_branch
   require_clean_tree
 
   local branch base merge_base commit_count
@@ -1265,7 +1268,7 @@ cmd_fs() {
 }
 
 cmd_rf() {
-  require_feature_branch
+  require_working_branch
   require_clean_tree
 
   local branch
@@ -1805,7 +1808,7 @@ print_worktree_table() {
   current_wt="$(git rev-parse --show-toplevel)"
 
   echo ""
-  printf "  ${BOLD}%-4s %-30s %-50s %s${NC}\n" "#" "Branch" "Path" "Status"
+  printf "  ${BOLD}%-4s %-50s %-30s %s${NC}\n" "#" "Worktree" "Branch" "Status"
   echo "  ─────────────────────────────────────────────────────────────────────────────────"
 
   local i
@@ -1845,9 +1848,9 @@ print_worktree_table() {
       fi
     fi
 
-    printf "${marker}${BOLD}%-4s${NC} %-30s " "$i" "$display_branch"
+    printf "${marker}${BOLD}%-4s${NC} " "$i"
     print_worktree_path_cell "$wt_path" "$current_wt" 50
-    printf " %s%s\n" "$ab" "$dirty"
+    printf " %-30s %s%s\n" "$display_branch" "$ab" "$dirty"
   done
   echo ""
 }
@@ -2170,16 +2173,16 @@ ${BOLD}USAGE${NC}
 
 ${BOLD}COMMANDS${NC}
   nf <name>    New feature branch
-  ff           Finish current feature (merge into base, print push hint)
-  ff!          Finish current feature (merge, push, delete branch)
-  sf           Squash feature commits into one (with prompt)
-  sf!          Squash feature commits into one (no prompt)
+  ff           Finish current branch (merge into base, print push hint)
+  ff!          Finish current branch (merge, push, delete branch)
+  sf           Squash branch commits into one (with prompt)
+  sf!          Squash branch commits into one (no prompt)
   cm <msg>     Add all changes and commit with message
   rc / rc!     Reset last commit safely / force an exceptional reset
-  pf           Publish feature branch to remote
+  pf           Publish current branch to remote
   pr <title>    Create a pull request (requires gh CLI)
   pr ls         List pull requests for local branches
-  rf           Rebase feature branch against base branch
+  rf           Rebase current branch against base branch
   ds           Deploy to staging (prompt to force push)
   ds!          Deploy to staging (force push automatically)
   dp           Deploy to production (tag release, prompt to push)
