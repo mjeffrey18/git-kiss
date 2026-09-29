@@ -280,6 +280,8 @@ Project-store entries are keyed by the canonical main-worktree path, so linked
 worktrees share settings. An empty `{}` entry acknowledges inherited settings
 without prompting again. Run `gk init` in a terminal to generate configuration,
 or `gk migrate` to upgrade legacy configuration.
+In `gk init`, leave the develop branch prompt blank for a simple flow. Enter a
+branch name to use a full flow, even when the prompt shows a detected branch.
 
 `~/.gk/projects.jsonc` is machine-managed: edit it only when git-kiss is not
 running, and do not commit or share it. The precedence order is built-in defaults,

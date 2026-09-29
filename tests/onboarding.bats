@@ -31,16 +31,21 @@ file_mode() {
 run_init_tty() {
   local destination="$1"
   local main_branch="${2:-main}"
-  local develop_branch="${3:-develop}"
+  local detected_develop="${3:-}"
   local global_exists="${4:-false}"
-  run env REPO_PATH="$REPO_DIR" GK_PATH="$GK" DESTINATION="$destination" MAIN_BRANCH="$main_branch" DEVELOP_BRANCH="$develop_branch" GLOBAL_EXISTS="$global_exists" expect -c '
+  local develop_answer="${5:-}"
+  run env REPO_PATH="$REPO_DIR" GK_PATH="$GK" DESTINATION="$destination" MAIN_BRANCH="$main_branch" DETECTED_DEVELOP="$detected_develop" DEVELOP_ANSWER="$develop_answer" GLOBAL_EXISTS="$global_exists" expect -c '
     set timeout 10
     cd $env(REPO_PATH)
     spawn -noecho bash $env(GK_PATH) init
     expect -exact "Main branch (default: $env(MAIN_BRANCH)): "
     send "\r"
-    expect -exact "Develop branch (blank for simple flow) \[$env(DEVELOP_BRANCH)\]: "
-    send "\r"
+    if {$env(DETECTED_DEVELOP) eq ""} {
+      expect -exact "Develop branch (blank for simple flow): "
+    } else {
+      expect -exact "Develop branch (blank for simple flow; detected: $env(DETECTED_DEVELOP)): "
+    }
+    send "$env(DEVELOP_ANSWER)\r"
     expect -exact "Staging branch (leave blank to skip): "
     send "\r"
     expect -exact "Feature prefix (default: feature/ if blank): "
@@ -68,15 +73,15 @@ run_init_tty() {
   [ -f "$HOME/.gk/.gitkiss.jsonc" ]
   assert_equal "$(file_mode "$HOME/.gk")" "700"
   assert_equal "$(file_mode "$HOME/.gk/.gitkiss.jsonc")" "600"
-  run_init_tty 1 main develop true
+  run_init_tty 1 main "" true
   assert_success
   [ -f "$HOME/.gk/projects.jsonc" ]
   assert_equal "$(file_mode "$HOME/.gk/projects.jsonc")" "600"
-  run_init_tty 2 main develop true
+  run_init_tty 2 main "" true
   assert_success
   [ -f "$REPO_DIR/.gitkiss.jsonc" ]
   rm -f "$REPO_DIR/.gitkiss.jsonc"
-  run_init_tty 3 main develop true
+  run_init_tty 3 main "" true
   assert_success
   [ -f "$REPO_DIR/.gitkiss.local.jsonc" ]
   run grep -qxF ".gitkiss.local.jsonc" "$REPO_DIR/.gitignore"
@@ -93,7 +98,7 @@ run_init_tty() {
     expect -re "Repo: absent.*\\r\\n"
     expect -re "Local: absent.*\\r\\n"
     expect -exact "Main branch (default: main): "; send "\\r"
-    expect -exact "Develop branch (blank for simple flow) \\[develop\\]: "; send "\\r"
+    expect -exact "Develop branch (blank for simple flow): "; send "\\r"
     expect -exact "Staging branch (leave blank to skip): "; send "\\r"
     expect -exact "Feature prefix (default: feature/ if blank): "; send "\\r"
     expect -exact "Use tags? \\[Y/n\\]: "; send "\\r"
@@ -110,27 +115,34 @@ run_init_tty() {
   git branch -m main master
   git update-ref -d refs/remotes/origin/main
   git branch dev
-  run_init_tty 3 master dev
+  run_init_tty 3 master dev false dev
   assert_success
   assert_equal "$(jget "$REPO_DIR/.gitkiss.jsonc" .main_branch)" "master"
   assert_equal "$(jget "$REPO_DIR/.gitkiss.jsonc" .develop_branch)" "dev"
 }
 
-@test "TTY init persists blank and default values" {
+@test "TTY init leaves develop blank when no branch exists" {
   run_init_tty 3
   assert_success
   assert_equal "$(jget "$REPO_DIR/.gitkiss.jsonc" .main_branch)" "main"
-  assert_equal "$(jget "$REPO_DIR/.gitkiss.jsonc" .develop_branch)" "develop"
+  assert_equal "$(jget "$REPO_DIR/.gitkiss.jsonc" .develop_branch)" ""
   assert_equal "$(jget "$REPO_DIR/.gitkiss.jsonc" .staging_branch)" ""
   assert_equal "$(jget "$REPO_DIR/.gitkiss.jsonc" .feature_prefix)" "feature/"
   assert_equal "$(jget "$REPO_DIR/.gitkiss.jsonc" .initials)" ""
   assert_equal "$(jget "$REPO_DIR/.gitkiss.jsonc" .worktree_copy | jq -c .)" "[]"
 }
 
+@test "TTY init leaves develop blank when a branch is detected but skipped" {
+  git branch develop
+  run_init_tty 3 main develop
+  assert_success
+  assert_equal "$(jget "$REPO_DIR/.gitkiss.jsonc" .develop_branch)" ""
+}
+
 @test "TTY init hides an existing global config and leaves it untouched" {
   mkdir -p "$HOME/.gk"
   printf '{ "feature_prefix": "global-keep/" }\n' > "$HOME/.gk/.gitkiss.jsonc"
-  run_init_tty 1 main develop true
+  run_init_tty 1 main "" true
   assert_success
   assert_equal "$(jget "$HOME/.gk/.gitkiss.jsonc" .feature_prefix)" "global-keep/"
   [[ "$output" != *"Overwrite global config"* ]]
@@ -144,7 +156,7 @@ run_init_tty() {
   git branch master
   git branch develop
   git branch dev
-  run_init_tty 3
+  run_init_tty 3 main develop false develop
   assert_success
   assert_equal "$(jget "$REPO_DIR/.gitkiss.jsonc" .main_branch)" "main"
   assert_equal "$(jget "$REPO_DIR/.gitkiss.jsonc" .develop_branch)" "develop"
@@ -157,7 +169,7 @@ run_init_tty() {
     cd $env(REPO_PATH)
     spawn -noecho bash $env(GK_PATH) init
     expect -exact "Main branch (default: main): "; send "\r"
-    expect -exact "Develop branch (blank for simple flow) \[develop\]: "; send "\r"
+    expect -exact "Develop branch (blank for simple flow): "; send "\r"
     expect -exact "Staging branch (leave blank to skip): "; send "\r"
     expect -exact "Feature prefix (default: feature/ if blank): "; send "\r"
     expect -exact "Use tags? \[Y/n\]: "; send "\r"

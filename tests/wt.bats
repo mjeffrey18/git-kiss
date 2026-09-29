@@ -101,7 +101,9 @@ teardown() {
   bash "$GK" wt nb hotfix-one >/dev/null 2>&1
   bash "$GK" wt nf login >/dev/null 2>&1
 
-  run bash "$GK" wt ls
+  local repo_parent
+  repo_parent="$(cd "$(dirname "$REPO_DIR")" && pwd -P)"
+  run env HOME="$repo_parent" bash "$GK" wt ls
   assert_success
   assert_output --partial "0"
   assert_output --partial "1"
@@ -109,7 +111,7 @@ teardown() {
   assert_output --partial "hotfix-one"
   assert_output --partial "feature/login"
   [[ "$output" == *"Worktree"*"Branch"*"Status"* ]]
-  [[ "$output" == *"repo--hotfix-one"*"hotfix-one"* ]]
+  [[ "$output" == *"~/repo--hotfix-one"*"hotfix-one"* ]]
 }
 
 @test "gk wt ls truncates long branch names within the branch column" {

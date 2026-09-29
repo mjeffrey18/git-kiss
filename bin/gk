@@ -1320,7 +1320,12 @@ cmd_init() {
   init_config_summary "Repo" "$summary_team"
   init_config_summary "Local" "$summary_local"
   printf "Main branch (default: %s): " "$detected_main"; read -r main_branch; main_branch="${main_branch:-$detected_main}"
-  printf "Develop branch (blank for simple flow) [%s]: " "$detected_develop"; read -r develop_branch; develop_branch="${develop_branch:-$detected_develop}"
+  if [[ -n "$detected_develop" ]]; then
+    printf "Develop branch (blank for simple flow; detected: %s): " "$detected_develop"
+  else
+    printf "Develop branch (blank for simple flow): "
+  fi
+  read -r develop_branch
   printf "Staging branch (leave blank to skip): "; read -r staging_branch
   printf "Feature prefix (default: feature/ if blank): "; read -r feature_prefix; feature_prefix="${feature_prefix:-feature/}"
   printf "Use tags? [Y/n]: "; read -r answer; [[ "$answer" == [nN] ]] && use_tags=false || use_tags=true
@@ -1396,7 +1401,7 @@ detect_main_branch() {
 }
 
 detect_develop_branch() {
-  if branch_ref_exists develop; then echo "develop"; elif branch_ref_exists dev; then echo "dev"; else echo "develop"; fi
+  if branch_ref_exists develop; then echo "develop"; elif branch_ref_exists dev; then echo "dev"; fi
 }
 
 needs_onboarding() {
