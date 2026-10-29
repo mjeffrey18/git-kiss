@@ -872,3 +872,169 @@ EOF
   wt_dir="$(dirname "$REPO_DIR")/$(basename "$REPO_DIR")--hotfix-db"
   [ -f "$wt_dir/.env" ]
 }
+
+@test "gk wt copy shows rules and sources then previews files before confirmation" {
+  git worktree add -b refresh "$REPO_DIR--refresh" >/dev/null 2>&1
+  printf '.env*\nconfig/local\n' > "$REPO_DIR/.worktreeinclude"
+  echo 'new' > "$REPO_DIR/.env"
+  echo 'test' > "$REPO_DIR/.env.test"
+  mkdir -p "$REPO_DIR/config/local" "$REPO_DIR--refresh/config/local"
+  echo 'updated' > "$REPO_DIR/config/local/settings"
+  echo 'old' > "$REPO_DIR--refresh/.env"
+  echo 'keep' > "$REPO_DIR--refresh/config/local/extra"
+  echo 'wrong.env' > "$REPO_DIR/.worktreeinclude"
+  printf '.env*\nconfig/local\n' > "$REPO_DIR--refresh/.worktreeinclude"
+  cd "$REPO_DIR--refresh/config"
+
+  run bash "$GK" wt copy <<< $'0\ny'
+  assert_success
+  assert_output --partial '.env*'
+  assert_output --partial 'Copy from worktree'
+  assert_output --partial "Copy rules from $REPO_DIR--refresh/.worktreeinclude:"
+  assert_output --partial 'current is the destination'
+  assert_output --partial '.env (overwrite)'
+  assert_output --partial '.env.test (new)'
+  assert_output --partial 'config/local/settings (new)'
+  assert_output --partial 'Copy these files?'
+  local prompt='Matching files will be overwritten. [y/N] '
+  local progress="${output#*"$prompt"}"
+  [[ "$progress" == *'.env'* ]]
+  [[ "$progress" == *'.env.test'* ]]
+  [[ "$progress" == *'config/local/'*'settings'* ]]
+  assert_equal "$(cat ../.env)" 'new'
+  assert_equal "$(cat ../.env.test)" 'test'
+  assert_equal "$(cat local/settings)" 'updated'
+  assert_equal "$(cat local/extra)" 'keep'
+  [ ! -d local/local ]
+}
+
+@test "gk wt copy selects a linked source by index name or full branch into main" {
+  git worktree add -b feature/refresh "$REPO_DIR--refresh" >/dev/null 2>&1
+  echo '.env' > "$REPO_DIR/.worktreeinclude"
+  local target
+  for target in 1 refresh feature/refresh; do
+    echo "$target" > "$REPO_DIR--refresh/.env"
+    run bash "$GK" wt copy "$target" <<< 'y'
+    assert_success
+    assert_equal "$(cat "$REPO_DIR/.env")" "$target"
+  done
+}
+
+@test "gk wt copy uses JSONC fallback and an empty include suppresses it" {
+  git worktree add -b refresh "$REPO_DIR--refresh" >/dev/null 2>&1
+  echo '{"worktree_copy":[".env"]}' > "$REPO_DIR/.gitkiss.local.jsonc"
+  echo 'source' > "$REPO_DIR--refresh/.env"
+  run bash "$GK" wt copy refresh <<< 'y'
+  assert_success
+  assert_equal "$(cat .env)" 'source'
+  echo 'keep' > .env
+  touch .worktreeinclude
+  run bash "$GK" wt copy refresh <<< 'y'
+  assert_success
+  assert_output --partial 'No worktree copy patterns configured'
+  assert_equal "$(cat .env)" 'keep'
+}
+
+@test "gk wt copy uses current JSONC when only the source has an include file" {
+  git worktree add -b refresh "$REPO_DIR--refresh" >/dev/null 2>&1
+  echo 'wrong.env' > "$REPO_DIR/.worktreeinclude"
+  echo 'source' > "$REPO_DIR/.env"
+  cd "$REPO_DIR--refresh"
+  echo '{"worktree_copy":[".env"]}' > .gitkiss.local.jsonc
+
+  run bash "$GK" wt copy 0 <<< 'y'
+  assert_success
+  assert_output --partial 'Copy rules from effective worktree_copy configuration'
+  assert_equal "$(cat .env)" 'source'
+  echo 'keep' > .env
+  touch .worktreeinclude
+  run bash "$GK" wt copy 0 <<< 'y'
+  assert_success
+  assert_output --partial 'No worktree copy patterns configured'
+  assert_equal "$(cat .env)" 'keep'
+}
+
+@test "gk wt copy declines or ends input without changing files" {
+  git worktree add -b refresh "$REPO_DIR--refresh" >/dev/null 2>&1
+  echo '.env' > .worktreeinclude
+  echo 'source' > "$REPO_DIR--refresh/.env"
+  echo 'keep' > .env
+  run bash "$GK" wt copy refresh <<< 'n'
+  assert_success
+  assert_output --partial 'Aborted'
+  assert_equal "$(cat .env)" 'keep'
+  run bash "$GK" wt copy refresh < /dev/null
+  assert_success
+  assert_output --partial 'Aborted'
+  assert_equal "$(cat .env)" 'keep'
+  run bash "$GK" wt copy < /dev/null
+  assert_success
+  assert_output --partial 'Aborted'
+}
+
+@test "gk wt copy rejects invalid selectors surplus arguments and copying to self" {
+  echo '.env' > .worktreeinclude
+  local target
+  for target in 0 main missing 9999999999999999999999999999 '1+0'; do
+    run bash "$GK" wt copy "$target" <<< 'y'
+    assert_failure
+  done
+  run bash "$GK" wt copy 1 extra
+  assert_failure
+  assert_output --partial 'Usage: gk wt copy'
+}
+
+@test "gk wt copy refuses destination symlinks before writing any files" {
+  git worktree add -b refresh "$REPO_DIR--refresh" >/dev/null 2>&1
+  mkdir -p "$REPO_DIR--refresh/config/local" "$BATS_TEST_TMPDIR/outside"
+  echo 'source' > "$REPO_DIR--refresh/config/local/settings"
+  echo 'source' > "$REPO_DIR--refresh/.env"
+  echo 'keep' > .env
+  printf '.env\nconfig/local\n' > .worktreeinclude
+  ln -s "$BATS_TEST_TMPDIR/outside" config
+
+  run bash "$GK" wt copy refresh <<< 'y'
+  assert_failure
+  assert_output --partial 'refuses destination symlinks'
+  assert_equal "$(cat .env)" 'keep'
+  [ ! -e "$BATS_TEST_TMPDIR/outside/local" ]
+}
+
+@test "gk wt copy refuses nested destination symlinks and type conflicts" {
+  git worktree add -b refresh "$REPO_DIR--refresh" >/dev/null 2>&1
+  mkdir -p "$REPO_DIR--refresh/config" config
+  echo 'source' > "$REPO_DIR--refresh/config/settings"
+  echo 'outside' > "$BATS_TEST_TMPDIR/outside"
+  echo 'config' > .worktreeinclude
+  ln -s "$BATS_TEST_TMPDIR/outside" config/settings
+
+  run bash "$GK" wt copy refresh <<< 'y'
+  assert_failure
+  assert_output --partial 'refuses destination symlinks'
+  assert_equal "$(cat "$BATS_TEST_TMPDIR/outside")" 'outside'
+  rm config/settings
+  mkdir config/settings
+  run bash "$GK" wt copy refresh <<< 'y'
+  assert_failure
+  assert_output --partial 'destination type differs'
+}
+
+@test "gk wt copy rejects unsafe source patterns and Git metadata" {
+  git worktree add -b refresh "$REPO_DIR--refresh" >/dev/null 2>&1
+  local pattern
+  for pattern in ../outside .git; do
+    echo "$pattern" > .worktreeinclude
+    run bash "$GK" wt copy refresh <<< 'y'
+    assert_failure
+  done
+  git status --porcelain >/dev/null
+}
+
+@test "gk wt copy reports no matches in the chosen source" {
+  git worktree add -b refresh "$REPO_DIR--refresh" >/dev/null 2>&1
+  echo 'missing.*' > .worktreeinclude
+  run bash "$GK" wt copy refresh < /dev/null
+  assert_success
+  assert_output --partial 'No worktree copy files matched'
+  refute_output --partial 'Copy these files?'
+}

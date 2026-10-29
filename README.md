@@ -80,6 +80,7 @@ Use `gk pr ls` to see pull requests for every local branch, including branches i
 | `gk wt nf <name>`  | New worktree with a feature branch (uses prefix/initials)                            |
 | `gk wt nb <name>`  | New worktree with a plain branch                                                     |
 | `gk wt ls`         | List all worktrees with status                                                       |
+| `gk wt copy [index\|name]` | Preview and copy configured files from a selected worktree into the current one |
 | `gk wt rm <id>`    | Remove a worktree by index or branch name (prompts if dirty)                         |
 | `gk wt rm! <id>`   | Remove a worktree, skipping the dirty-tree prompt                                    |
 | `gk wt clean`      | Remove merged worktrees (skips any with uncommitted changes)                         |
@@ -134,6 +135,26 @@ config/local
 ```
 
 Patterns are resolved as shell globs **relative to the project root** and copied from your main worktree's current working tree (so uncommitted files come across too). Literal paths containing spaces are supported. Absolute paths and `.` / `..` path components are rejected. Relative symlinks are preserved only when their targets stay inside the project and are also included in the copy set. Absolute, broken, escaping, and partially copied symlinks are refused. Linked worktrees use the canonical main-worktree include file and inherit the main worktree's `.gitkiss.local.jsonc` unless they provide their own local override.
+
+### Refreshing files in an existing worktree
+
+Run `gk wt copy` to show the copy rules and a table of worktrees. Choose a
+source by its displayed index, worktree name or full branch name. The current
+worktree is always the destination. You can also select the source directly
+with `gk wt copy 0` or `gk wt copy login`.
+
+The command lists the matched files and marks each as new or an overwrite.
+It asks for confirmation before copying. Enter or end of input cancels the copy.
+During copying, each file is logged on its own line with its source and destination.
+Matching files are overwritten, directories are merged and destination-only
+files are kept. Destination symlinks and file/directory type conflicts are
+refused before copying.
+
+The current destination worktree's `.worktreeinclude` is authoritative. If it
+is absent, the command uses `worktree_copy` from the current worktree's effective
+JSONC configuration. The command shows where the rules came from.
+These patterns are resolved against the selected source
+worktree, so you can pull local files from any other worktree, including main.
 
 ### Navigating between worktrees
 
