@@ -1638,24 +1638,30 @@ validate_worktree_symlink() {
 
 WORKTREE_COPY_MAIN_PATH=""
 WORKTREE_COPY_SOURCES=("")
+WORKTREE_COPY_PATTERNS=("")
 
-preflight_worktree_copy() {
-  local main_path include_file
-  main_path="$(canonical_main_worktree_path)"
-  WORKTREE_COPY_MAIN_PATH="$main_path"
-  WORKTREE_COPY_SOURCES=("")
-  include_file="$main_path/.worktreeinclude"
-  # A canonical-main .worktreeinclude is authoritative, including when it has
-  # no active patterns. Otherwise use the already-resolved configuration array.
-  local -a patterns=("")
+load_worktree_copy_patterns() {
+  local include_file
+  include_file="${1:-$(canonical_main_worktree_path)}/.worktreeinclude"
+  # An existing include file is authoritative even when it has no active patterns.
+  WORKTREE_COPY_PATTERNS=("")
   local _p
   if [[ -f "$include_file" ]]; then
     debug "worktree copy: .worktreeinclude present; configured worktree_copy suppressed"
-    while IFS= read -r _p; do patterns+=("$_p"); done < <(read_worktreeinclude "$include_file")
+    while IFS= read -r _p; do WORKTREE_COPY_PATTERNS+=("$_p"); done < <(read_worktreeinclude "$include_file")
   else
     debug "worktree copy: .worktreeinclude absent; using configured worktree_copy"
-    for _p in "${WORKTREE_COPY[@]:-}"; do [[ -n "$_p" ]] && patterns+=("$_p"); done
+    for _p in "${WORKTREE_COPY[@]:-}"; do [[ -n "$_p" ]] && WORKTREE_COPY_PATTERNS+=("$_p"); done
   fi
+  return 0
+}
+
+preflight_worktree_copy() {
+  local main_path="${1:-$(canonical_main_worktree_path)}" include_file
+  WORKTREE_COPY_MAIN_PATH="$main_path"
+  WORKTREE_COPY_SOURCES=("")
+  include_file="${2:-$(canonical_main_worktree_path)}/.worktreeinclude"
+  load_worktree_copy_patterns "${include_file%/.worktreeinclude}"
 
   local saved_nullglob saved_dotglob
   saved_nullglob="$(shopt -p nullglob || true)"
@@ -1665,7 +1671,7 @@ preflight_worktree_copy() {
   trap "eval $(printf '%q' "$saved_nullglob"); eval $(printf '%q' "$saved_dotglob"); trap - RETURN" RETURN
 
   local pattern src rel_src matched _done=$'\n' src_parent link
-  for pattern in "${patterns[@]}"; do
+  for pattern in "${WORKTREE_COPY_PATTERNS[@]}"; do
     [[ -z "$pattern" ]] && continue
     validate_worktree_pattern "$pattern" "$([[ -f "$include_file" ]] && echo .worktreeinclude || echo worktree_copy)"
     matched=0
@@ -1708,7 +1714,12 @@ copy_worktree_files() {
     mkdir -p "$dest_parent"
     physical_parent="$(cd -P "$dest_parent" && pwd)" || die "Could not resolve worktree copy destination: $dest"
     path_is_within "$physical_parent" "$wt_path" || die "Worktree copy destination escapes worktree: $dest"
-    cp -a "$src" "$dest"
+    if [[ -d "$src" && ! -L "$src" ]]; then
+      mkdir -p "$dest"
+      cp -av "$src/." "$dest/"
+    else
+      cp -av "$src" "$dest"
+    fi
     debug "worktree copy: $rel"
     copied=$((copied + 1))
   done
@@ -1716,6 +1727,99 @@ copy_worktree_files() {
   if [[ "$copied" -gt 0 ]]; then
     info "Copied $copied item(s) into worktree"
   fi
+}
+
+validate_existing_worktree_copy() {
+  local wt_path="$1" src entry rel dest parent
+  for src in "${WORKTREE_COPY_SOURCES[@]}"; do
+    [[ -n "$src" ]] || continue
+    while IFS= read -r -d '' entry; do
+      rel="${entry#"$WORKTREE_COPY_MAIN_PATH"/}"
+      case "$rel" in .git|.git/*) die "Worktree copy refuses Git metadata: $rel" ;; esac
+      dest="$wt_path/$rel"
+      parent="$dest"
+      while [[ "$parent" != "$wt_path" ]]; do
+        [[ ! -L "$parent" ]] || die "Worktree copy refuses destination symlinks: $parent"
+        if [[ "$parent" != "$dest" && -e "$parent" && ! -d "$parent" ]]; then
+          die "Worktree copy destination is not a directory: $parent"
+        fi
+        parent="${parent%/*}"
+      done
+      if [[ -e "$dest" ]]; then
+        if [[ -d "$entry" && ! -L "$entry" ]]; then
+          [[ -d "$dest" ]] || die "Worktree copy destination type differs: $dest"
+        else
+          [[ -f "$dest" ]] || die "Worktree copy destination type differs: $dest"
+        fi
+      fi
+    done < <(find "$src" -print0)
+  done
+}
+
+cmd_wt_copy() {
+  [[ $# -le 1 ]] || die "Usage: gk wt copy [index|name]"
+  local target="${1:-}" source_path="" wt_path i name pattern src entry rel answer
+  wt_path="$(git rev-parse --show-toplevel)"
+  wt_path="$(cd "$wt_path" && pwd -P)"
+  load_worktree_copy_patterns "$wt_path"
+  if [[ -f "$wt_path/.worktreeinclude" ]]; then
+    info "Copy rules from $wt_path/.worktreeinclude:"
+  else
+    info "Copy rules from effective worktree_copy configuration ($WORKTREE_COPY_SOURCE):"
+  fi
+  for pattern in "${WORKTREE_COPY_PATTERNS[@]}"; do
+    [[ -n "$pattern" ]] && printf '  %s\n' "$pattern"
+  done
+  if [[ ${#WORKTREE_COPY_PATTERNS[@]} -le 1 ]]; then
+    info "No worktree copy patterns configured."
+    return
+  fi
+  parse_worktrees
+  if [[ -z "$target" ]]; then
+    print_worktree_table
+    printf 'Copy from worktree [index|name] (current is the destination): '
+    if ! read -r target || [[ -z "$target" ]]; then
+      info "Aborted."
+      return
+    fi
+  fi
+  for i in "${!WT_PATHS[@]}"; do
+    name="${WT_PATHS[$i]##*/}"
+    name="${name##*--}"
+    if [[ "$target" == "$i" || "$target" == "$name" || "$target" == "${WT_BRANCHES[$i]}" ]]; then
+      [[ -z "$source_path" ]] || die "Multiple worktrees match '$target'. Use an index from 'gk wt ls'."
+      source_path="${WT_PATHS[$i]}"
+    fi
+  done
+  [[ -n "$source_path" ]] || die "Worktree not found: $target. Run 'gk wt ls' to see available worktrees."
+  [[ -d "$source_path" ]] || die "Worktree directory is missing: $source_path"
+  source_path="$(cd "$source_path" && pwd -P)"
+  [[ "$wt_path" != "$source_path" ]] || die "Source and destination are the same worktree."
+  preflight_worktree_copy "$source_path" "$wt_path"
+  validate_existing_worktree_copy "$wt_path"
+  if [[ ${#WORKTREE_COPY_SOURCES[@]} -le 1 ]]; then
+    info "No worktree copy files matched."
+    return
+  fi
+  info "Files to copy from $source_path into $wt_path:"
+  for src in "${WORKTREE_COPY_SOURCES[@]}"; do
+    [[ -n "$src" ]] || continue
+    while IFS= read -r -d '' entry; do
+      [[ ! -d "$entry" || -L "$entry" ]] || continue
+      rel="${entry#"$source_path"/}"
+      if [[ -e "$wt_path/$rel" ]]; then
+        printf '  %s (overwrite)\n' "$rel"
+      else
+        printf '  %s (new)\n' "$rel"
+      fi
+    done < <(find "$src" -print0)
+  done
+  printf 'Copy these files? Matching files will be overwritten. [y/N] '
+  if ! read -r answer || [[ ! "$answer" =~ ^[yY]$ ]]; then
+    info "Aborted."
+    return
+  fi
+  copy_worktree_files "$wt_path"
 }
 
 cmd_wt() {
@@ -1731,6 +1835,7 @@ cmd_wt() {
     nb)    cmd_wt_nb "$@" ;;
     ls)    cmd_wt_ls "$@" ;;
     co)    cmd_wt_co "$@" ;;
+    copy)  cmd_wt_copy "$@" ;;
     rm)    cmd_wt_rm "$@" ;;
     'rm!')  cmd_wt_rm --force "$@" ;;
     clean)  cmd_wt_clean "$@" ;;
@@ -2137,6 +2242,7 @@ ${BOLD}COMMANDS${NC}
   nb <name>          New worktree with plain branch
   ls                 List all worktrees with status
   co [index]         Checkout a worktree (interactive status table or displayed index)
+  copy [index|name]  Preview and copy files from a selected worktree into the current one
   rm <index|name>    Remove a worktree by index or branch name (prompts if dirty)
   rm! <index|name>   Remove a worktree, skipping the dirty-tree prompt
   clean              Remove merged worktrees (skips any with uncommitted changes)
@@ -2147,6 +2253,8 @@ ${BOLD}EXAMPLES${NC}
   gk wt nb hotfix-db       Create worktree with hotfix-db branch
   gk wt ls                 List worktrees (numbered)
   gk wt co [index]         Checkout a worktree interactively or by displayed index
+  gk wt copy              Choose a source worktree, preview files and confirm copying
+  gk wt copy login        Pull configured files from worktree "login" into the current one
   gk wt rm 2               Remove worktree #2
   gk wt rm login           Remove worktree matching "login"
   gk wt rm! login          Remove worktree "login" even if it has uncommitted changes
@@ -2154,7 +2262,8 @@ ${BOLD}EXAMPLES${NC}
 
 ${BOLD}CONFIG${NC}
   worktree_copy     JSON array of files/folders (literal paths or globs) copied into
-                    new worktrees. Useful for gitignored files like .env.
+                    new worktrees or by 'gk wt copy'. Matching files are overwritten;
+                    directories are merged and destination-only files are kept.
                     Example (.gitkiss.local.jsonc): "worktree_copy": [".env*", "config/local"]
   .worktreeinclude  Optional file in the project root, .gitignore-style (one glob per
                     line, # comments, blank lines ignored). When present it is authoritative
