@@ -9,6 +9,79 @@ teardown() {
   teardown_test_repo
 }
 
+@test "gk ff parks the base worktree after confirmation" {
+  create_feature_branch parking
+  git worktree add "$REPO_DIR--base" main >/dev/null 2>&1
+  local before
+  before="$(git rev-parse main)"
+  run bash "$GK" ff <<< y
+  assert_success
+  [ "$(git -C "$REPO_DIR--base" branch --show-current)" = park/base ]
+  [ "$(git rev-parse park/base)" = "$before" ]
+  git merge-base --is-ancestor feature/parking main
+  [ "$(git rev-list --parents -n 1 main | wc -w | tr -d ' ')" = 3 ]
+}
+
+@test "gk ff! automatically parks the canonical worktree and pushes" {
+  git worktree add -b feature/parking "$REPO_DIR--feature" main >/dev/null 2>&1
+  echo feature > "$REPO_DIR--feature/feature.txt"
+  git -C "$REPO_DIR--feature" add feature.txt
+  git -C "$REPO_DIR--feature" commit -qm feature
+  cd "$REPO_DIR--feature"
+  run bash "$GK" 'ff!' </dev/null
+  assert_success
+  [ "$(git -C "$REPO_DIR" branch --show-current)" = park/repo ]
+  [ "$(git rev-parse main)" = "$(git --git-dir="$REMOTE_DIR" rev-parse main)" ]
+}
+
+@test "gk ff declines parking on no and EOF" {
+  create_feature_branch decline
+  git worktree add "$REPO_DIR--base" main >/dev/null 2>&1
+  run bash "$GK" ff <<< n
+  assert_failure
+  run bash "$GK" ff </dev/null
+  assert_failure
+  [ "$(git -C "$REPO_DIR--base" branch --show-current)" = main ]
+  [ "$(git branch --show-current)" = feature/decline ]
+}
+
+@test "gk ff! refuses dirty worktrees and park branch collisions" {
+  create_feature_branch guards
+  git worktree add "$REPO_DIR--base" main >/dev/null 2>&1
+  echo dirty > "$REPO_DIR--base/dirty.txt"
+  run bash "$GK" 'ff!'
+  assert_failure
+  assert_output --partial "dirty worktree"
+  [ "$(git -C "$REPO_DIR--base" branch --show-current)" = main ]
+  git -C "$REPO_DIR--base" add dirty.txt
+  git -C "$REPO_DIR--base" commit -qm dirty
+  git branch park/base
+  run bash "$GK" 'ff!'
+  assert_failure
+  assert_output --partial "already exists"
+  [ "$(git -C "$REPO_DIR--base" branch --show-current)" = main ]
+}
+
+@test "gk ff! refuses a worktree with an unfinished operation" {
+  create_feature_branch guards
+  git worktree add "$REPO_DIR--base" main >/dev/null 2>&1
+  mkdir "$(git -C "$REPO_DIR--base" rev-parse --git-path rebase-merge)"
+  run bash "$GK" 'ff!'
+  assert_failure
+  assert_output --partial "Git operation in progress"
+  [ "$(git -C "$REPO_DIR--base" branch --show-current)" = main ]
+}
+
+@test "gk ff leaves owner parked if destination pull fails" {
+  create_feature_branch failure
+  git worktree add "$REPO_DIR--base" main >/dev/null 2>&1
+  git remote set-url origin "$BATS_TEST_TMPDIR/missing"
+  run bash "$GK" 'ff!'
+  assert_failure
+  assert_output --partial "will remain parked"
+  [ "$(git -C "$REPO_DIR--base" branch --show-current)" = park/base ]
+}
+
 @test "gk ff merges feature into base with merge commit" {
   create_feature_branch "login"
 

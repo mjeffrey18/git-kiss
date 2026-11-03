@@ -32,25 +32,25 @@ gk ff                # finish the current branch (merge into base branch)
 
 ## Commands
 
-| Command           | Description                                                              |
-| ----------------- | ------------------------------------------------------------------------ |
-| `gk nf "<name>"`  | **New feature** — create a feature branch from the base branch           |
-| `gk ff` / `ff!`   | **Finish branch** — merge the current branch into base (merge commit)    |
-| `gk sf` / `sf!`   | **Squash branch** — squash all commits on the current branch into one    |
-| `gk cm "<msg>"`   | **Commit** — add all changes and commit with message                     |
-| `gk rc` / `rc!`   | **Reset commit** - safely undo the last commit, keeping changes unstaged |
-| `gk pf`           | **Publish branch** — push the current branch to remote                   |
-| `gk pr "<title>"` | **Pull request** — create a PR via `gh` CLI (supports extra `gh` flags)  |
-| `gk pr ls`        | **Pull requests** - list PRs for local branches                          |
-| `gk rf`           | **Rebase branch** — rebase the current branch against base               |
-| `gk ds` / `ds!`   | **Deploy staging** — rebase the current branch onto staging              |
-| `gk dp` / `dp!`   | **Deploy production** — rebase develop into main and tag a release       |
-| `gk wt <cmd>`     | **Worktree** — manage git worktrees (see below)                          |
-| `gk init`         | **Init** — interactively generate configuration in one selected scope    |
-| `gk migrate`      | **Migrate** — convert legacy shell configuration to JSONC                |
-| `gk shell-init`   | **Shell init** — print shell integration for `gk wt co`                  |
-| `gk version`      | **Version** — print the installed version (`--version` too)              |
-| `gk help`         | **Help** — show usage                                                    |
+| Command            | Description                                                              |
+| ------------------ | ------------------------------------------------------------------------ |
+| `gk nf "<name>"`   | **New feature** — create a feature branch from the base branch           |
+| `gk ff` / `ff!`    | **Finish branch** — merge the current branch into base (merge commit)    |
+| `gk sf` / `sf!`    | **Squash branch** — squash all commits on the current branch into one    |
+| `gk cm "<msg>"`    | **Commit** — add all changes and commit with message                     |
+| `gk rc` / `rc!`    | **Reset commit** - safely undo the last commit, keeping changes unstaged |
+| `gk pf`            | **Publish branch** — push the current branch to remote                   |
+| `gk pr "<title>"`  | **Pull request** — create a PR via `gh` CLI (supports extra `gh` flags)  |
+| `gk pr ls`         | **Pull requests** - list PRs for local branches                          |
+| `gk rf [--remote]` | **Rebase branch** — rebase the current branch against base               |
+| `gk ds` / `ds!`    | **Deploy staging** — rebase the current branch onto staging              |
+| `gk dp` / `dp!`    | **Deploy production** — rebase develop into main and tag a release       |
+| `gk wt <cmd>`      | **Worktree** — manage git worktrees (see below)                          |
+| `gk init`          | **Init** — interactively generate configuration in one selected scope    |
+| `gk migrate`       | **Migrate** — convert legacy shell configuration to JSONC                |
+| `gk shell-init`    | **Shell init** — print shell integration for `gk wt co`                  |
+| `gk version`       | **Version** — print the installed version (`--version` too)              |
+| `gk help`          | **Help** — show usage                                                    |
 
 ### Pull Requests
 
@@ -65,6 +65,34 @@ gk pr "Refactor auth" --body "Switched to JWT tokens"
 
 Use `gk pr ls` to see pull requests for every local branch, including branches in linked worktrees.
 
+### Rebasing and parking worktrees
+
+`gk rf` checks out the local base, pulls from origin, then returns to the
+feature branch and rebases. If checkout or pull fails, it explains the failure
+and offers to fetch and rebase onto `origin/<base>` instead. Answer `y` to
+continue; the default is no. An unfinished Git operation must be resolved or
+aborted first.
+
+`gk rf --remote` fetches the base from origin and rebases directly, without
+checking out or updating the local base. Remote rebasing excludes local,
+unpushed base commits. `gk ff` still updates the local base and checks that the
+feature contains it before merging.
+
+When another worktree holds a destination branch, `gk ff`, `gk ds` and `gk dp`
+offer to park it at its current commit on `park/<worktree-name>`. Their `!`
+forms park automatically. A directory named `repo--task` uses `park/task`;
+the main worktree uses its directory basename. Dirty worktrees, unfinished Git
+operations and existing park branches stop the command. The other worktree
+stays parked, including when a later pull or merge fails.
+
+### Worktree removal change in 0.7.3
+
+`gk wt rm <index>` now keeps the branch, even when merged. It still asks before
+removing a dirty worktree. `gk wt rm! <index>` skips that prompt, discards
+uncommitted work and also deletes the branch if merged into the local base.
+Unmerged branches remain. Existing name selectors also work. `gk wt clean`
+keeps its existing behaviour.
+
 ## Worktrees
 
 `gk wt` makes it easy to work on multiple branches simultaneously using [git worktrees](https://git-scm.com/docs/git-worktree). Each worktree gets its own directory as a sibling to your main repo:
@@ -75,17 +103,17 @@ Use `gk pr ls` to see pull requests for every local branch, including branches i
 ~/projects/my-repo--hotfix-db/   ← gk wt nb hotfix-db
 ```
 
-| Command            | Description                                                                          |
-| ------------------ | ------------------------------------------------------------------------------------ |
-| `gk wt nf <name>`  | New worktree with a feature branch (uses prefix/initials)                            |
-| `gk wt nb <name>`  | New worktree with a plain branch                                                     |
-| `gk wt ls`         | List all worktrees with status                                                       |
-| `gk wt copy [index\|name]` | Preview and copy configured files from a selected worktree into the current one |
-| `gk wt rm <id>`    | Remove a worktree by index or branch name (prompts if dirty)                         |
-| `gk wt rm! <id>`   | Remove a worktree, skipping the dirty-tree prompt                                    |
-| `gk wt clean`      | Remove merged worktrees (skips any with uncommitted changes)                         |
-| `gk wt clean!`     | Remove merged worktrees, including any with uncommitted changes                      |
-| `gk wt co [index]` | Select from the worktree status table or use a displayed index (cds with shell-init) |
+| Command                    | Description                                                                          |
+| -------------------------- | ------------------------------------------------------------------------------------ |
+| `gk wt nf <name>`          | New worktree with a feature branch (uses prefix/initials)                            |
+| `gk wt nb <name>`          | New worktree with a plain branch                                                     |
+| `gk wt ls`                 | List all worktrees with status                                                       |
+| `gk wt copy [index\|name]` | Preview and copy configured files from a selected worktree into the current one      |
+| `gk wt rm <id>`            | Remove a worktree and keep its branch (prompts if dirty)                             |
+| `gk wt rm! <id>`           | Remove a worktree and delete its merged branch (no dirty-tree prompt)                |
+| `gk wt clean`              | Remove merged worktrees (skips any with uncommitted changes)                         |
+| `gk wt clean!`             | Remove merged worktrees, including any with uncommitted changes                      |
+| `gk wt co [index]`         | Select from the worktree status table or use a displayed index (cds with shell-init) |
 
 ```bash
 gk wt nf task1      # create worktree with feature/mj-task1 branch

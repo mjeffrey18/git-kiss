@@ -556,6 +556,53 @@ checkout_and_pull_branch() {
   pull_branch_from_origin "$branch"
 }
 
+git_operation_in_progress() {
+  local path
+  for path in rebase-merge rebase-apply MERGE_HEAD CHERRY_PICK_HEAD REVERT_HEAD sequencer BISECT_LOG; do
+    [[ ! -e "$(git rev-parse --git-path "$path")" ]] || return 0
+  done
+  return 1
+}
+
+checkout_destination_branch() {
+  local branch="$1" force="$2" owner="" current name park status i
+  current="$(git rev-parse --show-toplevel)"
+  parse_worktrees
+  for i in "${!WT_PATHS[@]}"; do
+    if [[ "${WT_BRANCHES[$i]}" == "$branch" && "${WT_PATHS[$i]}" != "$current" ]]; then
+      owner="${WT_PATHS[$i]}"
+      break
+    fi
+  done
+
+  if [[ -n "$owner" ]]; then
+    name="${owner##*/}"
+    if [[ "$owner" != "$(main_worktree_path)" ]]; then
+      name="${name#*--}"
+    fi
+    park="park/$name"
+    git check-ref-format --branch "$park" >/dev/null || die "Invalid park branch: $park"
+    git show-ref --verify --quiet "refs/heads/$park" && die "Park branch already exists: $park"
+    status="$(git -C "$owner" status --porcelain)" || die "Cannot inspect worktree: $owner"
+    [[ -z "$status" ]] || die "Cannot park dirty worktree: $owner"
+    (cd "$owner" && ! git_operation_in_progress) || die "Cannot park worktree with a Git operation in progress: $owner"
+    info "$branch is checked out at $owner. Park it on $park at its current commit."
+    if [[ "$force" != true ]]; then
+      local answer
+      if ! read -r -p "Park that worktree and continue? [y/N] " answer || [[ "$answer" != [yY] ]]; then
+        die "Parking declined."
+      fi
+    fi
+    [[ "$(git -C "$owner" symbolic-ref --quiet --short HEAD)" == "$branch" ]] || die "Worktree branch changed: $owner"
+    status="$(git -C "$owner" status --porcelain)" || die "Cannot inspect worktree: $owner"
+    [[ -z "$status" ]] || die "Cannot park dirty worktree: $owner"
+    (cd "$owner" && ! git_operation_in_progress) || die "Cannot park worktree with a Git operation in progress: $owner"
+    git -C "$owner" checkout -b "$park"
+    success "Worktree $owner is now parked on $park; it will remain parked."
+  fi
+  checkout_and_pull_branch "$branch"
+}
+
 rebase_current_onto() {
   local target="$1" current
   current="$(current_branch)"
@@ -780,7 +827,7 @@ cmd_ff() {
   local base
   base="$(base_branch)"
 
-  checkout_and_pull_branch "$base"
+  checkout_destination_branch "$base" "$force"
 
   git checkout "$branch"
 
@@ -1108,7 +1155,7 @@ cmd_dp() {
 
   pull_branch_from_origin "$DEVELOP_BRANCH" "Pulling latest $DEVELOP_BRANCH..."
 
-  checkout_and_pull_branch "$MAIN_BRANCH"
+  checkout_destination_branch "$MAIN_BRANCH" "$force"
 
   rebase_current_onto "$DEVELOP_BRANCH"
 
@@ -1200,7 +1247,7 @@ cmd_ds() {
 
   rebase_current_onto "$base"
 
-  checkout_and_pull_branch "$STAGING_BRANCH"
+  checkout_destination_branch "$STAGING_BRANCH" "$force"
 
   rebase_current_onto "$branch"
 
@@ -1268,20 +1315,51 @@ cmd_fs() {
 }
 
 cmd_rf() {
+  local remote=false
+  case "${1:-}" in
+    --remote) remote=true; shift ;;
+  esac
+  [[ "$#" -eq 0 ]] || die "Usage: gk rf [--remote]"
   require_working_branch
   require_clean_tree
+  if git_operation_in_progress; then
+    die "A Git operation is already in progress. Resolve or abort it before running gk rf."
+  fi
 
-  local branch
+  local branch base answer stage="checkout" failure=0
   branch="$(current_branch)"
-  local base
   base="$(base_branch)"
 
-  checkout_and_pull_branch "$base"
+  if [[ "$remote" != true ]]; then
+    info "Checking out $base and pulling latest..."
+    if git checkout "$base"; then
+      stage="pull"
+      git pull origin "$base" --rebase || failure=$?
+    else
+      failure=$?
+    fi
+    if [[ "$failure" -ne 0 ]]; then
+      warn "Local $base $stage failed (exit $failure); see Git's error above."
+      if git_operation_in_progress; then
+        die "Resolve the Git operation first. For a rebase, use 'git rebase --continue' or 'git rebase --abort'."
+      fi
+      warn "Remote rebasing excludes local, unpushed commits on $base."
+      if ! read -r -p "Rebase $branch onto origin/$base instead? [y/N] " answer || [[ "$answer" != [yY] ]]; then
+        die "Remote rebase declined."
+      fi
+      remote=true
+    fi
+    git checkout "$branch"
+  fi
 
-  git checkout "$branch"
-  rebase_current_onto "$base"
-
-  success "Branch $branch is up to date with $base."
+  if [[ "$remote" == true ]]; then
+    git fetch origin "+refs/heads/$base:refs/remotes/origin/$base"
+    rebase_current_onto "origin/$base"
+    success "Branch $branch is up to date with origin/$base."
+  else
+    rebase_current_onto "$base"
+    success "Branch $branch is up to date with $base."
+  fi
 }
 
 cmd_init() {
@@ -2116,10 +2194,9 @@ cmd_wt_rm() {
   info "Removing worktree at $rm_path..."
   remove_worktree_checked "$main_path" "$rm_path"
 
-  # Delete branch if it was merged
   local base
   base="$(base_branch)"
-  if [[ "$rm_branch" != "(detached)" && "$rm_branch" != "???" ]]; then
+  if [[ "$force" == true && "$rm_branch" != "(detached)" && "$rm_branch" != "???" ]]; then
     if branch_merged_into_base "$main_path" "$base" "$rm_branch"; then
       if delete_merged_branch "$main_path" "$rm_branch"; then
         success "Worktree removed. Branch $rm_branch deleted (was merged)."
@@ -2130,6 +2207,8 @@ cmd_wt_rm() {
     else
       success "Worktree removed. Branch $rm_branch kept (not yet merged)."
     fi
+  elif [[ "$rm_branch" != "(detached)" && "$rm_branch" != "???" ]]; then
+    success "Worktree removed. Branch $rm_branch kept."
   else
     success "Worktree removed."
   fi
@@ -2243,8 +2322,8 @@ ${BOLD}COMMANDS${NC}
   ls                 List all worktrees with status
   co [index]         Checkout a worktree (interactive status table or displayed index)
   copy [index|name]  Preview and copy files from a selected worktree into the current one
-  rm <index|name>    Remove a worktree by index or branch name (prompts if dirty)
-  rm! <index|name>   Remove a worktree, skipping the dirty-tree prompt
+  rm <index|name>    Remove a worktree, keep its branch (prompts if dirty)
+  rm! <index|name>   Remove a worktree and its merged branch (no dirty-tree prompt)
   clean              Remove merged worktrees (skips any with uncommitted changes)
   clean!             Remove merged worktrees, including any with uncommitted changes
 
@@ -2296,7 +2375,7 @@ ${BOLD}COMMANDS${NC}
   pf           Publish current branch to remote
   pr <title>    Create a pull request (requires gh CLI)
   pr ls         List pull requests for local branches
-  rf           Rebase current branch against base branch
+  rf [--remote] Rebase onto local base, or fetch and use origin/base
   ds           Deploy to staging (prompt to force push)
   ds!          Deploy to staging (force push automatically)
   dp           Deploy to production (tag release, prompt to push)
@@ -2306,6 +2385,12 @@ ${BOLD}COMMANDS${NC}
   migrate      Migrate legacy .gitkiss (shell) to JSONC config
   shell-init   Print shell integration (eval "\$(gk shell-init)")
   version      Print the installed version
+
+${BOLD}WORKTREES${NC}
+  ff, ds and dp offer to park a worktree holding the destination branch.
+  Their ! forms park automatically on park/<worktree-name>.
+  Dirty worktrees, unfinished Git operations and existing park branches stop them.
+  Parked worktrees remain parked, including after a later command failure.
 
 ${BOLD}CONFIG${NC} (JSONC, cascading - later overrides earlier)
   Global:   ~/.gk/.gitkiss.jsonc

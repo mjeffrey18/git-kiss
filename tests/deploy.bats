@@ -9,6 +9,47 @@ teardown() {
   teardown_test_repo
 }
 
+@test "gk ds! automatically parks the staging worktree" {
+  git checkout -b feature/parking >/dev/null 2>&1
+  echo feature > parking.txt
+  git add parking.txt && git commit -qm feature
+  git worktree add "$REPO_DIR--stage" staging >/dev/null 2>&1
+  run bash "$GK" 'ds!' </dev/null
+  assert_success
+  [ "$(git -C "$REPO_DIR--stage" branch --show-current)" = park/stage ]
+  git merge-base --is-ancestor feature/parking staging
+  [ "$(git rev-parse staging)" = "$(git --git-dir="$REMOTE_DIR" rev-parse staging)" ]
+}
+
+@test "gk dp! automatically parks the production worktree" {
+  echo production > parking.txt
+  git add parking.txt && git commit -qm production
+  git push -q origin develop
+  git worktree add "$REPO_DIR--production" main >/dev/null 2>&1
+  run bash "$GK" 'dp!' </dev/null
+  assert_success
+  [ "$(git -C "$REPO_DIR--production" branch --show-current)" = park/production ]
+  git merge-base --is-ancestor develop main
+  [ "$(git rev-parse main)" = "$(git --git-dir="$REMOTE_DIR" rev-parse main)" ]
+}
+
+@test "gk ds parks staging only after confirmation and allows declining push" {
+  git checkout -b feature/parking >/dev/null 2>&1
+  git worktree add "$REPO_DIR--stage" staging >/dev/null 2>&1
+  run bash "$GK" ds <<< $'y\nn'
+  assert_success
+  [ "$(git -C "$REPO_DIR--stage" branch --show-current)" = park/stage ]
+}
+
+@test "gk dp leaves production worktree alone when parking is declined" {
+  git worktree add "$REPO_DIR--production" main >/dev/null 2>&1
+  run bash "$GK" dp <<< n
+  assert_failure
+  [ "$(git -C "$REPO_DIR--production" branch --show-current)" = main ]
+  run git tag -l
+  assert_output ""
+}
+
 # ─── ds (deploy staging) ────────────────────────────────────────────────────
 
 @test "gk ds rejects the configured develop branch" {

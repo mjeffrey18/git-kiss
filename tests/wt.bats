@@ -137,7 +137,7 @@ teardown() {
 
 # ─── wt rm ──────────────────────────────────────────────────────────────────
 
-@test "gk wt rm by index removes worktree" {
+@test "gk wt rm by index removes worktree and keeps a merged branch" {
   bash "$GK" wt nb hotfix-db >/dev/null 2>&1
 
   # Index 1 should be the new worktree (0 is main)
@@ -153,6 +153,40 @@ teardown() {
   run git worktree list --porcelain
   assert_success
   refute_output --partial "worktree $wt_dir"
+  git show-ref --verify refs/heads/hotfix-db
+}
+
+@test "gk wt rm! deletes a merged branch" {
+  bash "$GK" wt nb merged >/dev/null 2>&1
+  run bash "$GK" wt 'rm!' 1 </dev/null
+  assert_success
+  assert_output --partial "Branch merged deleted"
+  run git show-ref --verify refs/heads/merged
+  assert_failure
+}
+
+@test "gk wt rm! discards dirty files but keeps an unmerged branch" {
+  bash "$GK" wt nb unmerged >/dev/null 2>&1
+  local path="$REPO_DIR--unmerged" before
+  echo committed > "$path/committed.txt"
+  git -C "$path" add committed.txt
+  git -C "$path" commit -qm unmerged
+  before="$(git rev-parse unmerged)"
+  echo dirty > "$path/dirty.txt"
+  run bash "$GK" wt 'rm!' 1 </dev/null
+  assert_success
+  [ ! -e "$path" ]
+  [ "$(git rev-parse unmerged)" = "$before" ]
+  assert_output --partial "kept (not yet merged)"
+}
+
+@test "gk wt rm preserves a dirty worktree when removal is declined" {
+  bash "$GK" wt nb dirty >/dev/null 2>&1
+  echo dirty > "$REPO_DIR--dirty/dirty.txt"
+  run bash "$GK" wt rm 1 <<< n
+  assert_success
+  [ -f "$REPO_DIR--dirty/dirty.txt" ]
+  git show-ref --verify refs/heads/dirty
 }
 
 @test "gk wt rm works when invoked from the selected worktree" {
@@ -165,7 +199,7 @@ teardown() {
   assert_success
   assert_output --partial "Worktree removed"
   refute_output --partial "Unable to read current working directory"
-  assert_output --partial "Branch hotfix-db deleted"
+  assert_output --partial "Branch hotfix-db kept"
   [ ! -e "$wt_dir" ]
   [ ! -L "$wt_dir" ]
 
@@ -885,12 +919,14 @@ EOF
   echo 'wrong.env' > "$REPO_DIR/.worktreeinclude"
   printf '.env*\nconfig/local\n' > "$REPO_DIR--refresh/.worktreeinclude"
   cd "$REPO_DIR--refresh/config"
+  local destination
+  destination="$(git rev-parse --show-toplevel)"
 
   run bash "$GK" wt copy <<< $'0\ny'
   assert_success
   assert_output --partial '.env*'
   assert_output --partial 'Copy from worktree'
-  assert_output --partial "Copy rules from $REPO_DIR--refresh/.worktreeinclude:"
+  assert_output --partial "Copy rules from $destination/.worktreeinclude:"
   assert_output --partial 'current is the destination'
   assert_output --partial '.env (overwrite)'
   assert_output --partial '.env.test (new)'

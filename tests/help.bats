@@ -16,6 +16,7 @@ teardown() {
   assert_output --partial "COMMANDS"
   assert_output --partial "nf <name>"
   assert_output --partial "wt <cmd>"
+  assert_output --partial "rf [--remote]"
 }
 
 @test "gk --help shows usage" {
@@ -62,6 +63,8 @@ teardown() {
   assert_output --partial "nf <name>"
   assert_output --partial "nb <name>"
   assert_output --partial "rm <index|name>"
+  assert_output --partial "keep its branch"
+  assert_output --partial "its merged branch"
 }
 
 @test "gk wt with no subcommand shows help" {
