@@ -919,12 +919,14 @@ EOF
   echo 'wrong.env' > "$REPO_DIR/.worktreeinclude"
   printf '.env*\nconfig/local\n' > "$REPO_DIR--refresh/.worktreeinclude"
   cd "$REPO_DIR--refresh/config"
+  local destination
+  destination="$(git rev-parse --show-toplevel)"
 
   run bash "$GK" wt copy <<< $'0\ny'
   assert_success
   assert_output --partial '.env*'
   assert_output --partial 'Copy from worktree'
-  assert_output --partial "Copy rules from $REPO_DIR--refresh/.worktreeinclude:"
+  assert_output --partial "Copy rules from $destination/.worktreeinclude:"
   assert_output --partial 'current is the destination'
   assert_output --partial '.env (overwrite)'
   assert_output --partial '.env.test (new)'
