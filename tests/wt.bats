@@ -836,7 +836,7 @@ write_global_worktree_dir() {
 
   run bash "$GK" wt nb taken
   assert_failure
-  assert_output --partial "Worktree path already exists: $REPO_DIR--taken"
+  assert_output --partial "Worktree path already exists: $(cd "$REPO_DIR--taken" && pwd -P)"
   run git branch --list taken
   assert_output ""
 }
