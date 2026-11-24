@@ -2030,10 +2030,31 @@ copy_worktree_files() {
   fi
 }
 
+# A destination already linked to its own source shares that file, so copying
+# would only copy it onto itself.
+worktree_copy_dest_links_to_source() {
+  local wt_path="$1" dest="$2"
+  while [[ "$dest" != "$wt_path" ]]; do
+    if [[ -L "$dest" ]]; then
+      [[ "$dest" -ef "$WORKTREE_COPY_MAIN_PATH/${dest#"$wt_path"/}" ]]
+      return
+    fi
+    dest="${dest%/*}"
+  done
+  return 1
+}
+
 validate_existing_worktree_copy() {
   local wt_path="$1" src entry rel dest parent
+  local -a sources=("")
   for src in "${WORKTREE_COPY_SOURCES[@]}"; do
     [[ -n "$src" ]] || continue
+    rel="${src#"$WORKTREE_COPY_MAIN_PATH"/}"
+    if worktree_copy_dest_links_to_source "$wt_path" "$wt_path/$rel"; then
+      info "Skipping $rel: already a symlink to the source"
+      continue
+    fi
+    sources+=("$src")
     while IFS= read -r -d '' entry; do
       rel="${entry#"$WORKTREE_COPY_MAIN_PATH"/}"
       case "$rel" in .git|.git/*) die "Worktree copy refuses Git metadata: $rel" ;; esac
@@ -2055,6 +2076,7 @@ validate_existing_worktree_copy() {
       fi
     done < <(find "$src" -print0)
   done
+  WORKTREE_COPY_SOURCES=("${sources[@]}")
 }
 
 cmd_wt_copy() {

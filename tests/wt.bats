@@ -1345,6 +1345,31 @@ EOF
   [ ! -e "$BATS_TEST_TMPDIR/outside/local" ]
 }
 
+@test "gk wt copy skips destinations already linked to their source" {
+  git worktree add -b refresh "$REPO_DIR--refresh" >/dev/null 2>&1
+  local src="$REPO_DIR--refresh"
+  mkdir -p "$src/.bundle" "$src/config/local"
+  echo 'bundle' > "$src/.bundle/config"
+  echo 'app' > "$src/config/application.yml"
+  echo 'dev' > "$src/config/local/dev.conf"
+  echo 'env' > "$src/.env"
+  printf '.bundle\nconfig/application.yml\nconfig/local/dev.conf\n.env\n' > .worktreeinclude
+  mkdir -p config
+  ln -s "$src/.bundle" .bundle
+  ln -s "$src/config/application.yml" config/application.yml
+  ln -s "$src/config/local" config/local
+
+  run bash "$GK" wt copy refresh <<< 'y'
+  assert_success
+  assert_output --partial 'Skipping .bundle: already a symlink to the source'
+  assert_output --partial 'Skipping config/application.yml: already a symlink to the source'
+  assert_output --partial 'Skipping config/local/dev.conf: already a symlink to the source'
+  assert_equal "$(cat .env)" 'env'
+  [ -L .bundle ] && [ -L config/application.yml ] && [ -L config/local ]
+  assert_equal "$(cat "$src/.bundle/config")" 'bundle'
+  assert_equal "$(cat "$src/config/application.yml")" 'app'
+}
+
 @test "gk wt copy refuses nested destination symlinks and type conflicts" {
   git worktree add -b refresh "$REPO_DIR--refresh" >/dev/null 2>&1
   mkdir -p "$REPO_DIR--refresh/config" config
