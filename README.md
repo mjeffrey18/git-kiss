@@ -152,18 +152,27 @@ It is a path template:
 ```
 
 - A leading `~` means `$HOME`. A relative path starts at the main worktree.
+- Symlinks, `.` and `..` are resolved before the worktree is created.
 - `{name}` must appear once, in the last path segment. That segment may also use
   `{repo}`, so git-kiss can read the name back for `gk wt rm`, `gk wt copy` and
-  parking. Worktrees created with the default layout keep working after you
-  change the setting.
+  parking. A name with a slash, such as `api/db`, keeps its full name. Worktrees
+  created with the default layout keep working after you change the setting.
 - `{project_path}` requires the repo to be inside `$HOME`.
-- A worktree inside the main worktree is added to `.git/info/exclude`, so it
-  does not show as untracked.
-- `gk wt nf` and `gk wt nb` stop when the target path already exists.
+- A worktree inside the main worktree shows there as untracked unless it is
+  ignored. `gk` prints the rule to add, such as `/.worktrees/` in `.gitignore`.
+  It does not edit ignore files itself, because `.git/info/exclude` applies to
+  every worktree.
+- `gk wt nf` and `gk wt nb` stop before creating anything when the target path
+  already exists, when it is inside a linked worktree of any repository, or when a copy rule
+  selects a directory that would contain the new worktree.
+- `gk wt rm`, `gk wt rm!` and `gk wt clean` refuse to remove a worktree that
+  contains another worktree.
 
-Set it per project in `~/.gk/projects.jsonc` or `.gitkiss.local.jsonc`, or for
-every repo in `~/.gk/.gitkiss.jsonc`. Paths under `~` are personal, so keep them
-out of the committed `.gitkiss.jsonc`.
+Set it per project in `~/.gk/projects.jsonc` or an untracked
+`.gitkiss.local.jsonc`, or for every repo in `~/.gk/.gitkiss.jsonc`. It is a
+personal setting: `gk` refuses it in the committed `.gitkiss.jsonc` and in a
+`.gitkiss.local.jsonc` that Git tracks or that is a symlink, so a cloned repo
+cannot choose where your copied files go.
 
 ### Seeding files into new worktrees
 
