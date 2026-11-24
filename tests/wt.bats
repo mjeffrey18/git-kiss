@@ -564,6 +564,96 @@ teardown() {
   assert_failure
 }
 
+# ─── worktree_dir ──────────────────────────────────────────────────────────
+
+write_global_worktree_dir() {
+  mkdir -p "$HOME/.gk"
+  jq -n --arg dir "$1" '{worktree_dir: $dir}' > "$HOME/.gk/.gitkiss.jsonc"
+}
+
+@test "worktree_dir places worktrees under a home-relative template" {
+  write_global_worktree_dir '~/worktrees/{repo}/{name}'
+
+  run bash "$GK" wt nf login
+  assert_success
+  [ -d "$HOME/worktrees/repo/login" ]
+  [ "$(git -C "$HOME/worktrees/repo/login" branch --show-current)" = feature/login ]
+
+  run bash "$GK" wt rm login
+  assert_success
+  [ ! -e "$HOME/worktrees/repo/login" ]
+}
+
+@test "worktree_dir expands {project_path} relative to HOME" {
+  git clone -q -b main "$REMOTE_DIR" "$HOME/Projects/oss/repo"
+  cd "$HOME/Projects/oss/repo"
+  write_global_worktree_dir '~/worktrees/{project_path}/{repo}/{name}'
+
+  run bash "$GK" wt nb hotfix-db
+  assert_success
+  [ -d "$HOME/worktrees/Projects/oss/repo/hotfix-db" ]
+}
+
+@test "worktree_dir rejects {project_path} outside HOME" {
+  write_global_worktree_dir '~/worktrees/{project_path}/{repo}/{name}'
+
+  run bash "$GK" wt nb hotfix-db
+  assert_failure
+  assert_output --partial 'is not inside $HOME'
+}
+
+@test "worktree_dir nested in the main worktree keeps it clean and matches by name" {
+  write_global_worktree_dir '{parent}/{repo}/.worktrees/{name}'
+
+  run bash "$GK" wt nb hotfix-db
+  assert_success
+  [ -d "$REPO_DIR/.worktrees/hotfix-db" ]
+  assert_equal "$(git status --porcelain)" ""
+
+  run bash "$GK" wt rm hotfix-db
+  assert_success
+  [ ! -e "$REPO_DIR/.worktrees/hotfix-db" ]
+}
+
+@test "worktree_dir keeps matching worktrees made with the default layout" {
+  git worktree add -b old "$REPO_DIR--old" >/dev/null 2>&1
+  write_global_worktree_dir '~/worktrees/{repo}-{name}'
+
+  run bash "$GK" wt rm old
+  assert_success
+  [ ! -e "$REPO_DIR--old" ]
+}
+
+@test "worktree_dir refuses an existing target" {
+  mkdir -p "$REPO_DIR--taken"
+
+  run bash "$GK" wt nb taken
+  assert_failure
+  assert_output --partial "Worktree path already exists: $REPO_DIR--taken"
+  run git branch --list taken
+  assert_output ""
+}
+
+@test "worktree_dir rejects unknown placeholders and misplaced {name}" {
+  local template
+  for template in '' '{nme}' '~/wt/{name}/src' '{parent}/{name}-{name}' '~/{project_path}{name}'; do
+    write_global_worktree_dir "$template"
+    run bash "$GK" wt nb anything
+    assert_failure
+    assert_output --partial 'Invalid worktree_dir'
+  done
+}
+
+@test "parking names a custom-layout worktree by its short name" {
+  write_global_worktree_dir '~/worktrees/{repo}/{name}'
+  create_feature_branch parking
+  git worktree add "$HOME/worktrees/repo/task" main >/dev/null 2>&1
+
+  run bash "$GK" 'ff!' </dev/null
+  assert_success
+  [ "$(git -C "$HOME/worktrees/repo/task" branch --show-current)" = park/task ]
+}
+
 # ─── WORKTREE_COPY ─────────────────────────────────────────────────────────
 
 @test "gk wt nf copies files from WORKTREE_COPY config" {
@@ -1006,6 +1096,18 @@ EOF
   run bash "$GK" wt copy < /dev/null
   assert_success
   assert_output --partial 'Aborted'
+}
+
+@test "gk wt copy prefers an index over a worktree with a numeric name" {
+  git worktree add -b two "$REPO_DIR--2" >/dev/null 2>&1
+  git worktree add -b login "$REPO_DIR--login" >/dev/null 2>&1
+  echo '.env' > "$REPO_DIR/.worktreeinclude"
+  echo from-two > "$REPO_DIR--2/.env"
+  echo from-login > "$REPO_DIR--login/.env"
+
+  run bash "$GK" wt copy 2 <<< 'y'
+  assert_success
+  assert_equal "$(cat "$REPO_DIR/.env")" from-login
 }
 
 @test "gk wt copy rejects invalid selectors surplus arguments and copying to self" {
