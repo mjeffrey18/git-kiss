@@ -15,6 +15,7 @@ DEFAULT_STAGING_BRANCH="staging"
 DEFAULT_FEATURE_PREFIX="feature/"
 DEFAULT_USE_TAGS="true"
 DEFAULT_INITIALS=""
+DEFAULT_WORKTREE_DIR="{parent}/{repo}--{name}"
 # WORKTREE_COPY has no scalar default; it is initialised as an empty array below.
 
 # ─── Config Loading ──────────────────────────────────────────────────────────
@@ -26,6 +27,7 @@ reset_config() {
   FEATURE_PREFIX="$DEFAULT_FEATURE_PREFIX"
   USE_TAGS="$DEFAULT_USE_TAGS"
   INITIALS="$DEFAULT_INITIALS"
+  WORKTREE_DIR="$DEFAULT_WORKTREE_DIR"
   WORKTREE_COPY=()
   MAIN_BRANCH_SOURCE="built-in defaults"
   DEVELOP_BRANCH_SOURCE="built-in defaults"
@@ -33,6 +35,7 @@ reset_config() {
   FEATURE_PREFIX_SOURCE="built-in defaults"
   USE_TAGS_SOURCE="built-in defaults"
   INITIALS_SOURCE="built-in defaults"
+  WORKTREE_DIR_SOURCE="built-in defaults"
   WORKTREE_COPY_SOURCE="built-in defaults"
 }
 
@@ -60,6 +63,7 @@ set_config_value() {
     feature_prefix) FEATURE_PREFIX="$value"; FEATURE_PREFIX_SOURCE="$source" ;;
     use_tags)       USE_TAGS="$value"; USE_TAGS_SOURCE="$source" ;;
     initials)       INITIALS="$value"; INITIALS_SOURCE="$source" ;;
+    worktree_dir)   WORKTREE_DIR="$value"; WORKTREE_DIR_SOURCE="$source" ;;
     *) die "Unsupported configuration key: $key" ;;
   esac
 }
@@ -172,7 +176,7 @@ load_config() {
   fi
 
   normalize_worktree_copy
-  debug "config effective: main_branch=$MAIN_BRANCH ($MAIN_BRANCH_SOURCE); develop_branch=${DEVELOP_BRANCH:-} ($DEVELOP_BRANCH_SOURCE); staging_branch=${STAGING_BRANCH:-} ($STAGING_BRANCH_SOURCE); feature_prefix=$FEATURE_PREFIX ($FEATURE_PREFIX_SOURCE); use_tags=$USE_TAGS ($USE_TAGS_SOURCE); initials=${INITIALS:-} ($INITIALS_SOURCE); worktree_copy=${WORKTREE_COPY[*]:-} ($WORKTREE_COPY_SOURCE)"
+  debug "config effective: main_branch=$MAIN_BRANCH ($MAIN_BRANCH_SOURCE); develop_branch=${DEVELOP_BRANCH:-} ($DEVELOP_BRANCH_SOURCE); staging_branch=${STAGING_BRANCH:-} ($STAGING_BRANCH_SOURCE); feature_prefix=$FEATURE_PREFIX ($FEATURE_PREFIX_SOURCE); use_tags=$USE_TAGS ($USE_TAGS_SOURCE); initials=${INITIALS:-} ($INITIALS_SOURCE); worktree_dir=$WORKTREE_DIR ($WORKTREE_DIR_SOURCE); worktree_copy=${WORKTREE_COPY[*]:-} ($WORKTREE_COPY_SOURCE)"
 }
 
 canonical_main_worktree_path() {
@@ -576,10 +580,7 @@ checkout_destination_branch() {
   done
 
   if [[ -n "$owner" ]]; then
-    name="${owner##*/}"
-    if [[ "$owner" != "$(main_worktree_path)" ]]; then
-      name="${name#*--}"
-    fi
+    name="$(worktree_short_name "$owner" "$branch")"
     park="park/$name"
     git check-ref-format --branch "$park" >/dev/null || die "Invalid park branch: $park"
     git show-ref --verify --quiet "refs/heads/$park" && die "Park branch already exists: $park"
@@ -620,19 +621,28 @@ strip_jsonc_comments() {
   sed 's|^[[:space:]]*//.*$||' "$1"
 }
 
+# jq runs a filter once per top-level value and `-e` reports only the last one,
+# so a file holding several objects could pass a check that one object fails.
+require_single_json_object() {
+  printf '%s' "$1" | jq -s -e 'length == 1 and (.[0] | type == "object")' >/dev/null 2>&1 || \
+    die "Invalid configuration: $2 (expected exactly one JSON object)"
+}
+
 apply_config_object() {
   local object="$1" logical_source="$2" display_source="$3"
+  require_single_json_object "$object" "$display_source"
   # A present layer is authoritative: malformed types must never make a
   # mutating command fall back to defaults or an earlier layer.
   if ! printf '%s' "$object" | jq -e '
       type == "object"
-      and ([keys[] | select(. != "main_branch" and . != "develop_branch" and . != "staging_branch" and . != "feature_prefix" and . != "use_tags" and . != "initials" and . != "worktree_copy")] | length == 0)
+      and ([keys[] | select(. != "main_branch" and . != "develop_branch" and . != "staging_branch" and . != "feature_prefix" and . != "use_tags" and . != "initials" and . != "worktree_dir" and . != "worktree_copy")] | length == 0)
       and ((has("main_branch") | not) or (.main_branch | type == "string"))
       and ((has("develop_branch") | not) or (.develop_branch | type == "string"))
       and ((has("staging_branch") | not) or (.staging_branch | type == "string"))
       and ((has("feature_prefix") | not) or (.feature_prefix | type == "string"))
       and ((has("use_tags") | not) or (.use_tags | type == "boolean"))
       and ((has("initials") | not) or (.initials | type == "string"))
+      and ((has("worktree_dir") | not) or (.worktree_dir | type == "string"))
       and ((has("worktree_copy") | not) or (.worktree_copy | type == "array" and all(.[]; type == "string")))
     ' >/dev/null 2>&1; then
     die "Invalid configuration: $display_source (expected a supported JSON object with valid value types)"
@@ -643,7 +653,7 @@ apply_config_object() {
   # a single line and cannot split into a spurious extra key that would trip
   # set_config_value's unknown-key guard.
   local pairs
-  if ! pairs="$(printf '%s' "$object" | jq -r 'to_entries[] | select(.key=="main_branch" or .key=="develop_branch" or .key=="staging_branch" or .key=="feature_prefix" or .key=="use_tags" or .key=="initials") | [.key, .value] | @tsv')"; then
+  if ! pairs="$(printf '%s' "$object" | jq -r 'to_entries[] | select(.key=="main_branch" or .key=="develop_branch" or .key=="staging_branch" or .key=="feature_prefix" or .key=="use_tags" or .key=="initials" or .key=="worktree_dir") | [.key, .value] | @tsv')"; then
     die "Invalid configuration: $display_source (invalid JSON; comments must be on their own line)"
   fi
 
@@ -672,7 +682,24 @@ apply_jsonc_layer() {
 
   local stripped
   stripped="$(strip_jsonc_comments "$f")"
+  require_single_json_object "$stripped" "$display_source"
+  if printf '%s' "$stripped" | jq -e 'has("worktree_dir")' >/dev/null 2>&1 && \
+     repo_controlled_config "$f" "$logical_source"; then
+    die "worktree_dir is a personal setting and is not allowed in $display_source, which the repository controls. Set it in an untracked .gitkiss.local.jsonc, ~/.gk/projects.jsonc or ~/.gk/.gitkiss.jsonc."
+  fi
   apply_config_object "$stripped" "$logical_source" "$display_source"
+}
+
+# A cloned repository must not choose where personal seed files are written, so
+# worktree_dir is refused from committed config and from a local file that Git
+# tracks or that is a symlink.
+repo_controlled_config() {
+  local f="$1" logical_source="$2"
+  case "$logical_source" in
+    repo|"repo legacy") return 0 ;;
+    local) [[ -L "$f" ]] || git -C "$(dirname "$f")" ls-files --error-unmatch -- "$(basename "$f")" >/dev/null 2>&1 ;;
+    *) return 1 ;;
+  esac
 }
 
 validate_branch_name() {
@@ -690,6 +717,27 @@ validate_config_values() {
   [[ -n "$FEATURE_PREFIX" ]] || die "Invalid feature_prefix in $source"
   probe="${FEATURE_PREFIX}gk-validation"
   validate_branch_name "feature_prefix" "$probe" "$source"
+  validate_worktree_dir "$WORKTREE_DIR" "$source"
+}
+
+# The short name must be recoverable from a worktree's directory name, so
+# {name} appears once, in the last path segment, next only to {repo}.
+validate_worktree_dir() {
+  local template="$1" source="$2" rest last
+  [[ -n "$template" ]] || die "Invalid worktree_dir in $source: it must not be empty"
+  rest="$template"
+  while [[ "$rest" == *'{'* ]]; do
+    rest="${rest#*\{}"
+    case "$rest" in
+      'name}'*|'repo}'*|'parent}'*|'project_path}'*) ;;
+      *) die "Invalid worktree_dir in $source: $template (placeholders: {name}, {repo}, {parent}, {project_path})" ;;
+    esac
+  done
+  last="${template##*/}"
+  [[ "$last" == *'{name}'* && "${template#*\{name\}}" != *'{name}'* ]] || \
+    die "Invalid worktree_dir in $source: $template ({name} must appear once, in the last path segment)"
+  [[ "$last" != *'{parent}'* && "$last" != *'{project_path}'* ]] || \
+    die "Invalid worktree_dir in $source: $template (the last path segment may use only {repo} and {name})"
 }
 
 # ─── Version Check ──────────────────────────────────────────────────────────
@@ -1582,6 +1630,15 @@ remove_worktree_checked() {
   local main_path="$1" rm_path="$2" remove_status metadata_status=0 worktrees line
   local registration_remains=false filesystem_remains=false
 
+  # A forced remove deletes the whole directory, including a checkout inside it.
+  worktrees="$(git -C "$main_path" worktree list --porcelain)" || return 1
+  while IFS= read -r line; do
+    if [[ "$line" == "worktree $rm_path/"* ]]; then
+      error "Cannot remove $rm_path: it contains the worktree ${line#worktree }. Remove that worktree first."
+      return 1
+    fi
+  done <<< "$worktrees"
+
   if git -C "$main_path" worktree remove "$rm_path" --force; then
     remove_status=0
   else
@@ -1646,13 +1703,179 @@ delete_merged_branch() {
   git -C "$main_path" branch -d "$branch"
 }
 
-worktree_dir_name() {
-  local name="$1"
-  local main_path
-  main_path="$(main_worktree_path)"
-  local repo
+# Print the parent of the main worktree relative to $HOME, for {project_path}.
+worktree_project_path() {
+  local parent="$1" home home_real
+  home="${HOME%/}"
+  home_real="$(cd "$home" 2>/dev/null && pwd -P || printf '%s' "$home")"
+  if [[ "$parent" == "$home" || "$parent" == "$home_real" ]]; then
+    printf ''
+  elif [[ "$parent" == "$home/"* ]]; then
+    printf '%s' "${parent#"$home"/}"
+  elif [[ "$parent" == "$home_real/"* ]]; then
+    printf '%s' "${parent#"$home_real"/}"
+  else
+    return 1
+  fi
+}
+
+# Expand a worktree_dir template in one pass, so placeholder text inside a
+# substituted value (a parent directory named "x-{name}") stays literal.
+render_worktree_dir() {
+  local template="$1" name="$2" main_path="$3" parent repo rest key value out=""
+  parent="$(dirname "$main_path")"
   repo="$(basename "$main_path")"
-  echo "$(dirname "$main_path")/${repo}--${name}"
+  rest="$template"
+  while [[ "$rest" == *'{'* ]]; do
+    out+="${rest%%\{*}"
+    rest="${rest#*\{}"
+    key="${rest%%\}*}"
+    rest="${rest#*\}}"
+    case "$key" in
+      name)         value="$name" ;;
+      repo)         value="$repo" ;;
+      parent)       value="$parent" ;;
+      project_path) value="$(worktree_project_path "$parent")" || return 1 ;;
+      *)            value="{$key}" ;;
+    esac
+    out+="$value"
+  done
+  out+="$rest"
+  # shellcheck disable=SC2088  # match a literal ~ from the template
+  if [[ "$template" == '~/'* ]]; then
+    out="${HOME%/}${out:1}"
+  elif [[ "$out" != /* ]]; then
+    out="$main_path/$out"
+  fi
+  printf '%s\n' "$out"
+}
+
+# Resolve an absolute path component by component, following symlinks while
+# the directories exist, so it compares equal to what `pwd -P` and
+# `git worktree list` report. `..` after a symlink goes to the link target's
+# parent, as the kernel would.
+physical_path() {
+  local part cur=/ next exists=true
+  local -a parts
+  IFS=/ read -r -a parts <<< "$1"
+  for part in "${parts[@]}"; do
+    case "$part" in
+      ''|.) continue ;;
+      ..)
+        if [[ "$exists" == true ]]; then
+          cur="$(CDPATH='' cd -P -- "$cur/.." && pwd)" || return 1
+        else
+          cur="${cur%/*}"
+          [[ -n "$cur" ]] || cur=/
+          [[ -d "$cur" ]] && exists=true
+        fi
+        ;;
+      *)
+        next="${cur%/}/$part"
+        if [[ "$exists" == true && -d "$next" ]]; then
+          cur="$(CDPATH='' cd -P -- "$next" && pwd)" || return 1
+        else
+          exists=false
+          cur="$next"
+        fi
+        ;;
+    esac
+  done
+  printf '%s\n' "$cur"
+}
+
+worktree_dir_name() {
+  local main_path path
+  main_path="$(canonical_main_worktree_path)"
+  path="$(render_worktree_dir "$WORKTREE_DIR" "$1" "$main_path")" || \
+    die "worktree_dir uses {project_path}, but $(dirname "$main_path") is not inside \$HOME ($WORKTREE_DIR_SOURCE)."
+  physical_path "$path" || die "Could not resolve the worktree path $path."
+}
+
+# Print the short name of a worktree: the main worktree's directory name, or
+# the {name} part of a linked worktree's path. The whole path is matched against
+# the configured and the built-in layout, so names may contain slashes and
+# worktrees made before worktree_dir changed keep their names. When both layouts
+# match, the name that produced the worktree's branch wins: `gk wt nb` uses the
+# name as the branch, `gk wt nf` adds feature_prefix. If the branch has changed
+# since, the built-in layout wins, since such a path most likely predates the
+# setting.
+worktree_short_name() {
+  local path="$1" branch="${2:-}" main_path template full prefix suffix name match="" sentinel=$'\x1f'
+  main_path="$(canonical_main_worktree_path)"
+  if [[ "$path" == "$main_path" || "$path" == "$(main_worktree_path)" ]]; then
+    printf '%s\n' "${path##*/}"
+    return
+  fi
+  for template in "$WORKTREE_DIR" "$DEFAULT_WORKTREE_DIR"; do
+    full="$(render_worktree_dir "$template" "$sentinel" "$main_path")" || continue
+    full="$(physical_path "$full")" || continue
+    prefix="${full%%"$sentinel"*}"
+    suffix="${full#*"$sentinel"}"
+    if [[ ${#path} -gt $(( ${#prefix} + ${#suffix} )) && "$path" == "$prefix"* && "$path" == *"$suffix" ]]; then
+      name="${path#"$prefix"}"
+      name="${name%"$suffix"}"
+      if [[ -n "$branch" && ( "$branch" == "$name" || "$branch" == "$FEATURE_PREFIX$name" ) ]]; then
+        printf '%s\n' "$name"
+        return
+      fi
+      match="$name"
+    fi
+  done
+  printf '%s\n' "${match:-${path##*/}}"
+}
+
+# A worktree inside a linked worktree would be deleted with it, so refuse that.
+# Nesting inside the main worktree is allowed: it cannot be removed by gk.
+# The enclosing checkout is found on disk, so linked worktrees of other
+# repositories count too. A `.git` file marks a linked worktree or submodule;
+# an ordinary enclosing repository has a `.git` directory and is allowed.
+refuse_nested_in_linked_worktree() {
+  local path="$1" ancestor top main_path
+  main_path="$(canonical_main_worktree_path)"
+  ancestor="$path"
+  while [[ ! -d "$ancestor" ]]; do
+    ancestor="${ancestor%/*}"
+    [[ -n "$ancestor" ]] || ancestor=/
+  done
+  top="$(git -C "$ancestor" rev-parse --show-toplevel 2>/dev/null)" || return 0
+  top="$(CDPATH='' cd -P -- "$top" && pwd)" || return 0
+  if [[ "$top" != "$main_path" && -f "$top/.git" ]]; then
+    die "Worktree path $path is inside the worktree $top. Choose another name or change worktree_dir."
+  fi
+}
+
+new_worktree_path() {
+  local path
+  path="$(worktree_dir_name "$1")" || return 1
+  [[ ! -e "$path" && ! -L "$path" ]] || die "Worktree path already exists: $path"
+  refuse_nested_in_linked_worktree "$path"
+  printf '%s\n' "$path"
+}
+
+# cp cannot copy a directory into itself, so refuse before anything is created.
+refuse_copy_into_source() {
+  local dest="$1" src physical
+  for src in "${WORKTREE_COPY_SOURCES[@]}"; do
+    [[ -n "$src" ]] || continue
+    physical="$(physical_path "$src")" || die "Could not resolve worktree copy source: $src"
+    if path_is_within "$dest" "$physical"; then
+      die "Worktree copy source $src contains the destination worktree $dest. Remove it from the copy rules or change worktree_dir."
+    fi
+  done
+}
+
+# A worktree inside the main worktree shows as untracked there unless ignored.
+# gk only suggests a rule: info/exclude is shared by every worktree.
+hint_unignored_nested_worktree() {
+  local wt_path="$1" main_path
+  main_path="$(canonical_main_worktree_path)"
+  [[ "$wt_path" == "$main_path/"* ]] || return 0
+  git -C "$main_path" check-ignore -q -- "$wt_path" 2>/dev/null && return 0
+  # Escape ignore-pattern metacharacters so the suggested rule matches literally.
+  local rule
+  rule="$(printf '%s' "${wt_path#"$main_path"/}" | sed 's/[][\\*?]/\\&/g')"
+  warn "The worktree is inside the main worktree and shows there as untracked. Add '/$rule/' to .gitignore to hide it."
 }
 
 # Read a .worktreeinclude file (.gitignore-style: one glob per line, blank lines
@@ -1861,19 +2084,25 @@ cmd_wt_copy() {
       return
     fi
   fi
+  # A displayed index wins over a worktree or branch with the same name.
   for i in "${!WT_PATHS[@]}"; do
-    name="${WT_PATHS[$i]##*/}"
-    name="${name##*--}"
-    if [[ "$target" == "$i" || "$target" == "$name" || "$target" == "${WT_BRANCHES[$i]}" ]]; then
-      [[ -z "$source_path" ]] || die "Multiple worktrees match '$target'. Use an index from 'gk wt ls'."
-      source_path="${WT_PATHS[$i]}"
-    fi
+    [[ "$target" == "$i" ]] && source_path="${WT_PATHS[$i]}"
   done
+  if [[ -z "$source_path" ]]; then
+    for i in "${!WT_PATHS[@]}"; do
+      name="$(worktree_short_name "${WT_PATHS[$i]}" "${WT_BRANCHES[$i]}")"
+      if [[ "$target" == "$name" || "$target" == "${WT_BRANCHES[$i]}" ]]; then
+        [[ -z "$source_path" ]] || die "Multiple worktrees match '$target'. Use an index from 'gk wt ls'."
+        source_path="${WT_PATHS[$i]}"
+      fi
+    done
+  fi
   [[ -n "$source_path" ]] || die "Worktree not found: $target. Run 'gk wt ls' to see available worktrees."
   [[ -d "$source_path" ]] || die "Worktree directory is missing: $source_path"
   source_path="$(cd "$source_path" && pwd -P)"
   [[ "$wt_path" != "$source_path" ]] || die "Source and destination are the same worktree."
   preflight_worktree_copy "$source_path" "$wt_path"
+  refuse_copy_into_source "$wt_path"
   validate_existing_worktree_copy "$wt_path"
   if [[ ${#WORKTREE_COPY_SOURCES[@]} -le 1 ]]; then
     info "No worktree copy files matched."
@@ -1943,17 +2172,19 @@ cmd_wt_nf() {
   local branch_name="${FEATURE_PREFIX}${name}"
   validate_branch_name "generated worktree branch" "$branch_name" "gk wt nf"
   local wt_path
-  wt_path="$(worktree_dir_name "$name")"
+  wt_path="$(new_worktree_path "$name")"
   local base
   base="$(base_branch)"
 
   preflight_worktree_copy
+  refuse_copy_into_source "$wt_path"
 
   info "Fetching latest $base..."
   git fetch origin "$base"
 
   info "Creating worktree at $wt_path..."
   git worktree add "$wt_path" -b "$branch_name" "origin/$base"
+  hint_unignored_nested_worktree "$wt_path"
   git -C "$wt_path" branch --unset-upstream 2>/dev/null || true
   copy_worktree_files "$wt_path"
 
@@ -1971,17 +2202,19 @@ cmd_wt_nb() {
   validate_branch_name "generated worktree branch" "$name" "gk wt nb"
 
   local wt_path
-  wt_path="$(worktree_dir_name "$name")"
+  wt_path="$(new_worktree_path "$name")"
   local base
   base="$(base_branch)"
 
   preflight_worktree_copy
+  refuse_copy_into_source "$wt_path"
 
   info "Fetching latest $base..."
   git fetch origin "$base"
 
   info "Creating worktree at $wt_path..."
   git worktree add "$wt_path" -b "$name" "origin/$base"
+  hint_unignored_nested_worktree "$wt_path"
   git -C "$wt_path" branch --unset-upstream 2>/dev/null || true
   copy_worktree_files "$wt_path"
 
@@ -2129,25 +2362,23 @@ cmd_wt_rm() {
     rm_path="${WT_PATHS[$target]}"
     rm_branch="${WT_BRANCHES[$target]}"
   else
-    # Match by worktree name (the basename after '--') or branch name. Prefer an
-    # exact match; only fall back to substring matching when nothing matches
-    # exactly, and refuse to guess when a substring is ambiguous.
+    # Match by worktree short name or branch name. Prefer an exact match; only
+    # fall back to substring matching when nothing matches exactly, and refuse
+    # to guess when either match is ambiguous.
     local i wt_name
     for i in "${!WT_BRANCHES[@]}"; do
-      wt_name="${WT_PATHS[$i]##*/}"   # basename of the worktree path
-      wt_name="${wt_name##*--}"       # name after the '--' separator
+      wt_name="$(worktree_short_name "${WT_PATHS[$i]}" "${WT_BRANCHES[$i]}")"
       if [[ "$wt_name" == "$target" || "${WT_BRANCHES[$i]}" == "$target" ]]; then
+        [[ -z "$rm_path" ]] || die "Multiple worktrees match '$target'. Use an index from 'gk wt ls'."
         rm_path="${WT_PATHS[$i]}"
         rm_branch="${WT_BRANCHES[$i]}"
-        break
       fi
     done
 
     if [[ -z "$rm_path" ]]; then
       local -a hits=()
       for i in "${!WT_BRANCHES[@]}"; do
-        wt_name="${WT_PATHS[$i]##*/}"
-        wt_name="${wt_name##*--}"
+        wt_name="$(worktree_short_name "${WT_PATHS[$i]}" "${WT_BRANCHES[$i]}")"
         if [[ "$wt_name" == *"$target"* || "${WT_BRANCHES[$i]}" == *"$target"* ]]; then
           hits+=("$i")
         fi
@@ -2340,6 +2571,12 @@ ${BOLD}EXAMPLES${NC}
   gk wt clean              Clean up merged worktrees
 
 ${BOLD}CONFIG${NC}
+  worktree_dir      Where new worktrees go. Default: "{parent}/{repo}--{name}".
+                    Placeholders: {name} (required, last segment), {repo}, {parent}
+                    (folder holding the main worktree), {project_path} ({parent}
+                    relative to \$HOME). A leading ~ means \$HOME; relative paths start
+                    at the main worktree. Example (~/.gk/.gitkiss.jsonc):
+                    "worktree_dir": "~/worktrees/{repo}/{name}"
   worktree_copy     JSON array of files/folders (literal paths or globs) copied into
                     new worktrees or by 'gk wt copy'. Matching files are overwritten;
                     directories are merged and destination-only files are kept.

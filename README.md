@@ -80,8 +80,9 @@ feature contains it before merging.
 
 When another worktree holds a destination branch, `gk ff`, `gk ds` and `gk dp`
 offer to park it at its current commit on `park/<worktree-name>`. Their `!`
-forms park automatically. A directory named `repo--task` uses `park/task`;
-the main worktree uses its directory basename. Dirty worktrees, unfinished Git
+forms park automatically. A linked worktree uses its `{name}` from
+[`worktree_dir`](#worktree-location), so `repo--task` uses `park/task`; the
+main worktree uses its directory basename. Dirty worktrees, unfinished Git
 operations and existing park branches stop the command. The other worktree
 stays parked, including when a later pull or merge fails.
 
@@ -95,7 +96,7 @@ keeps its existing behaviour.
 
 ## Worktrees
 
-`gk wt` makes it easy to work on multiple branches simultaneously using [git worktrees](https://git-scm.com/docs/git-worktree). Each worktree gets its own directory as a sibling to your main repo:
+`gk wt` makes it easy to work on multiple branches simultaneously using [git worktrees](https://git-scm.com/docs/git-worktree). By default, each worktree gets its own directory as a sibling to your main repo (see [Worktree location](#worktree-location) to change this):
 
 ```
 ~/projects/my-repo/              ← main worktree
@@ -125,6 +126,53 @@ gk wt rm 2          # remove worktree #2
 gk wt rm task1      # remove worktree matching "task1"
 gk wt clean         # clean up merged worktrees
 ```
+
+### Worktree location
+
+Set `worktree_dir` to choose where `gk wt nf` and `gk wt nb` create worktrees.
+It is a path template:
+
+| Placeholder      | Value for `~/Projects/oss/my-repo`              |
+| ---------------- | ----------------------------------------------- |
+| `{name}`         | the worktree name, e.g. `mj-login` (required)   |
+| `{repo}`         | `my-repo`                                       |
+| `{parent}`       | `~/Projects/oss` (the folder holding the repo)  |
+| `{project_path}` | `Projects/oss` (`{parent}` relative to `$HOME`) |
+
+| `worktree_dir`                              | `gk wt nf login` creates                  |
+| ------------------------------------------- | ----------------------------------------- |
+| `{parent}/{repo}--{name}` (default)         | `~/Projects/oss/my-repo--login`           |
+| `~/worktrees/{repo}/{name}`                 | `~/worktrees/my-repo/login`               |
+| `~/worktrees/{project_path}/{repo}/{name}`  | `~/worktrees/Projects/oss/my-repo/login`  |
+| `{parent}/{repo}/.worktrees/{name}`         | `~/Projects/oss/my-repo/.worktrees/login` |
+
+```jsonc
+// ~/.gk/.gitkiss.jsonc - every repo
+{ "worktree_dir": "~/worktrees/{repo}/{name}" }
+```
+
+- A leading `~` means `$HOME`. A relative path starts at the main worktree.
+- Symlinks, `.` and `..` are resolved before the worktree is created.
+- `{name}` must appear once, in the last path segment. That segment may also use
+  `{repo}`, so git-kiss can read the name back for `gk wt rm`, `gk wt copy` and
+  parking. A name with a slash, such as `api/db`, keeps its full name. Worktrees
+  created with the default layout keep working after you change the setting.
+- `{project_path}` requires the repo to be inside `$HOME`.
+- A worktree inside the main worktree shows there as untracked unless it is
+  ignored. `gk` prints the rule to add, such as `/.worktrees/` in `.gitignore`.
+  It does not edit ignore files itself, because `.git/info/exclude` applies to
+  every worktree.
+- `gk wt nf` and `gk wt nb` stop before creating anything when the target path
+  already exists, when it is inside a linked worktree of any repository, or when a copy rule
+  selects a directory that would contain the new worktree.
+- `gk wt rm`, `gk wt rm!` and `gk wt clean` refuse to remove a worktree that
+  contains another worktree.
+
+Set it per project in `~/.gk/projects.jsonc` or an untracked
+`.gitkiss.local.jsonc`, or for every repo in `~/.gk/.gitkiss.jsonc`. It is a
+personal setting: `gk` refuses it in the committed `.gitkiss.jsonc` and in a
+`.gitkiss.local.jsonc` that Git tracks or that is a symlink, so a cloned repo
+cannot choose where your copied files go.
 
 ### Seeding files into new worktrees
 
@@ -169,7 +217,8 @@ Patterns are resolved as shell globs **relative to the project root** and copied
 Run `gk wt copy` to show the copy rules and a table of worktrees. Choose a
 source by its displayed index, worktree name or full branch name. The current
 worktree is always the destination. You can also select the source directly
-with `gk wt copy 0` or `gk wt copy login`.
+with `gk wt copy 0` or `gk wt copy login`. A number that matches a displayed
+index always selects that index, even if a worktree has that number as its name.
 
 The command lists the matched files and marks each as new or an overwrite.
 It asks for confirmation before copying. Enter or end of input cancels the copy.
@@ -366,6 +415,7 @@ exists; collisions leave the legacy file untouched.
 | `feature_prefix` | `feature/` | Prefix for branches created by `gk nf` and `gk wt nf`                                                                     |
 | `use_tags`       | `true`     | Auto-increment semver tags on `gk dp`                                                                                     |
 | `initials`       |            | Prepended to feature branches (e.g. `mj`) - usually in `.local`                                                           |
+| `worktree_dir`   | `{parent}/{repo}--{name}` | Path template for new worktrees - see [Worktree location](#worktree-location)                              |
 | `worktree_copy`  | `[]`       | Files/folders (literal or glob) copied into new worktrees when no `.worktreeinclude` exists - see [Worktrees](#worktrees) |
 
 > Comments must be on their own line (`//`). Inline and `/* */` comments aren't supported.
