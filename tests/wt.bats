@@ -1345,6 +1345,95 @@ EOF
   [ ! -e "$BATS_TEST_TMPDIR/outside/local" ]
 }
 
+@test "gk wt copy skips destinations already linked to their source" {
+  git worktree add -b refresh "$REPO_DIR--refresh" >/dev/null 2>&1
+  local src="$REPO_DIR--refresh"
+  mkdir -p "$src/.bundle" "$src/config/local"
+  echo 'bundle' > "$src/.bundle/config"
+  echo 'app' > "$src/config/application.yml"
+  echo 'dev' > "$src/config/local/dev.conf"
+  echo 'env' > "$src/.env"
+  printf '.bundle\nconfig/application.yml\nconfig/local/dev.conf\n.env\n' > .worktreeinclude
+  mkdir -p config
+  ln -s "$src/.bundle" .bundle
+  ln -s "$src/config/application.yml" config/application.yml
+  ln -s "$src/config/local" config/local
+
+  run bash "$GK" wt copy refresh <<< 'y'
+  assert_success
+  assert_output --partial 'Skipping .bundle: already a symlink to the source'
+  assert_output --partial 'Skipping config/application.yml: already a symlink to the source'
+  assert_output --partial 'Skipping config/local/dev.conf: already a symlink to the source'
+  assert_equal "$(cat .env)" 'env'
+  [ -L .bundle ] && [ -L config/application.yml ] && [ -L config/local ]
+  assert_equal "$(cat "$src/.bundle/config")" 'bundle'
+  assert_equal "$(cat "$src/config/application.yml")" 'app'
+}
+
+@test "gk wt copy reports nothing to copy when every match is linked" {
+  git worktree add -b refresh "$REPO_DIR--refresh" >/dev/null 2>&1
+  mkdir -p "$REPO_DIR--refresh/.bundle"
+  echo 'bundle' > "$REPO_DIR--refresh/.bundle/config"
+  echo '.bundle' > .worktreeinclude
+  ln -s "$REPO_DIR--refresh/.bundle" .bundle
+
+  run bash "$GK" wt copy refresh <<< 'y'
+  assert_success
+  assert_output --partial 'Nothing to copy: every match is already a symlink to the source.'
+  refute_output --partial 'No worktree copy files matched'
+}
+
+@test "gk wt copy refuses a copied symlink whose target was skipped" {
+  git worktree add -b refresh "$REPO_DIR--refresh" >/dev/null 2>&1
+  mkdir -p "$REPO_DIR--refresh/config/local"
+  echo 'dev' > "$REPO_DIR--refresh/config/local/dev.conf"
+  ln -s config/local "$REPO_DIR--refresh/current"
+  echo 'env' > "$REPO_DIR--refresh/.env"
+  printf 'config/local\ncurrent\n.env\n' > .worktreeinclude
+  mkdir -p config
+  ln -s "$REPO_DIR--refresh/config/local" config/local
+
+  run bash "$GK" wt copy refresh <<< 'y'
+  assert_failure
+  assert_output --partial 'refuses to copy symlinks when a match was skipped: current'
+  [ ! -e current ] && [ ! -L current ]
+  [ ! -e .env ]
+}
+
+@test "gk wt copy refuses copied symlinks that could pass through a skipped link" {
+  git worktree add -b refresh "$REPO_DIR--refresh" >/dev/null 2>&1
+  local src="$REPO_DIR--refresh"
+  mkdir -p "$src/data" "$src/shared"
+  echo 'file' > "$src/data/file"
+  echo 'shared' > "$src/shared/file"
+  ln -s data "$src/alias"
+  ln -s alias/file "$src/current"
+  ln -s shared/../data/file "$src/other"
+  printf 'current\nother\nalias\nshared/file\ndata\n' > .worktreeinclude
+  ln -s "$src/data" alias
+  ln -s "$src/shared" shared
+
+  run bash "$GK" wt copy refresh <<< 'y'
+  assert_failure
+  assert_output --partial 'refuses to copy symlinks when a match was skipped'
+  [ ! -L current ] && [ ! -L other ]
+  [ ! -e data ]
+}
+
+@test "gk wt copy refuses a linked file inside a copied folder" {
+  git worktree add -b refresh "$REPO_DIR--refresh" >/dev/null 2>&1
+  mkdir -p "$REPO_DIR--refresh/config" config
+  echo 'source' > "$REPO_DIR--refresh/config/settings.yml"
+  echo 'other' > "$REPO_DIR--refresh/config/other.yml"
+  echo 'config' > .worktreeinclude
+  ln -s "$REPO_DIR--refresh/config/settings.yml" config/settings.yml
+
+  run bash "$GK" wt copy refresh <<< 'y'
+  assert_failure
+  assert_output --partial 'refuses a symlink inside a copied folder'
+  [ ! -e config/other.yml ]
+}
+
 @test "gk wt copy refuses nested destination symlinks and type conflicts" {
   git worktree add -b refresh "$REPO_DIR--refresh" >/dev/null 2>&1
   mkdir -p "$REPO_DIR--refresh/config" config

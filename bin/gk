@@ -2030,17 +2030,46 @@ copy_worktree_files() {
   fi
 }
 
+# A destination already linked to its own source shares that file, so copying
+# would only copy it onto itself.
+worktree_copy_dest_links_to_source() {
+  local wt_path="$1" dest="$2"
+  while [[ "$dest" != "$wt_path" ]]; do
+    if [[ -L "$dest" ]]; then
+      [[ "$dest" -ef "$WORKTREE_COPY_MAIN_PATH/${dest#"$wt_path"/}" ]]
+      return
+    fi
+    dest="${dest%/*}"
+  done
+  return 1
+}
+
 validate_existing_worktree_copy() {
-  local wt_path="$1" src entry rel dest parent
+  local wt_path="$1" src entry rel dest parent link
+  local -a sources=("")
+  local skipped=0
   for src in "${WORKTREE_COPY_SOURCES[@]}"; do
     [[ -n "$src" ]] || continue
+    rel="${src#"$WORKTREE_COPY_MAIN_PATH"/}"
+    if worktree_copy_dest_links_to_source "$wt_path" "$wt_path/$rel"; then
+      info "Skipping $rel: already a symlink to the source"
+      skipped=$((skipped + 1))
+      continue
+    fi
+    sources+=("$src")
     while IFS= read -r -d '' entry; do
       rel="${entry#"$WORKTREE_COPY_MAIN_PATH"/}"
       case "$rel" in .git|.git/*) die "Worktree copy refuses Git metadata: $rel" ;; esac
       dest="$wt_path/$rel"
       parent="$dest"
       while [[ "$parent" != "$wt_path" ]]; do
-        [[ ! -L "$parent" ]] || die "Worktree copy refuses destination symlinks: $parent"
+        if [[ -L "$parent" ]]; then
+          # Only a matched path or a folder above it is skipped; a folder copy
+          # merges into its destination and would write through a nested link.
+          [[ "$parent" -ef "$WORKTREE_COPY_MAIN_PATH/${parent#"$wt_path"/}" ]] && \
+            die "Worktree copy refuses a symlink inside a copied folder, even one linked to the source: $parent. Remove the link, or add copy rules for the folder's other files."
+          die "Worktree copy refuses destination symlinks: $parent"
+        fi
         if [[ "$parent" != "$dest" && -e "$parent" && ! -d "$parent" ]]; then
           die "Worktree copy destination is not a directory: $parent"
         fi
@@ -2055,6 +2084,14 @@ validate_existing_worktree_copy() {
       fi
     done < <(find "$src" -print0)
   done
+  WORKTREE_COPY_SOURCES=("${sources[@]}")
+  # A copied relative link could resolve through a skipped destination link
+  # into the source, so copying links is refused once anything is skipped.
+  if [[ "$skipped" -gt 0 && "${#WORKTREE_COPY_SOURCES[@]}" -gt 1 ]]; then
+    link="$(find "${WORKTREE_COPY_SOURCES[@]:1}" -type l -print 2>/dev/null | head -n 1)"
+    [[ -z "$link" ]] || \
+      die "Worktree copy refuses to copy symlinks when a match was skipped: ${link#"$WORKTREE_COPY_MAIN_PATH"/}. Remove the skipped destination links, or leave the symlink out of the copy rules."
+  fi
 }
 
 cmd_wt_copy() {
@@ -2103,9 +2140,13 @@ cmd_wt_copy() {
   [[ "$wt_path" != "$source_path" ]] || die "Source and destination are the same worktree."
   preflight_worktree_copy "$source_path" "$wt_path"
   refuse_copy_into_source "$wt_path"
-  validate_existing_worktree_copy "$wt_path"
   if [[ ${#WORKTREE_COPY_SOURCES[@]} -le 1 ]]; then
     info "No worktree copy files matched."
+    return
+  fi
+  validate_existing_worktree_copy "$wt_path"
+  if [[ ${#WORKTREE_COPY_SOURCES[@]} -le 1 ]]; then
+    info "Nothing to copy: every match is already a symlink to the source."
     return
   fi
   info "Files to copy from $source_path into $wt_path:"

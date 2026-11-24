@@ -224,8 +224,13 @@ The command lists the matched files and marks each as new or an overwrite.
 It asks for confirmation before copying. Enter or end of input cancels the copy.
 During copying, each file is logged on its own line with its source and destination.
 Matching files are overwritten, directories are merged and destination-only
-files are kept. Destination symlinks and file/directory type conflicts are
-refused before copying.
+files are kept. A matched path whose destination, or a folder above it, is
+already a symlink to the same source is skipped, because it already shares that
+content. When anything is skipped, copying source symlinks is refused, because
+a copied link could resolve through a skipped link into the source. A symlink
+inside a copied folder is still refused, even when it links to the source.
+Other destination symlinks and file/directory type conflicts are refused before
+copying.
 
 The current destination worktree's `.worktreeinclude` is authoritative. If it
 is absent, the command uses `worktree_copy` from the current worktree's effective
